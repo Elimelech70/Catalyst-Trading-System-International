@@ -1,0 +1,30 @@
+# Catalyst Trading System - International (HKEX)
+# Python 3.11+ required
+
+# Claude API
+anthropic>=0.39.0
+
+# Interactive Brokers
+ib_insync>=0.9.86
+
+# Database
+psycopg2-binary>=2.9.9
+
+# Data Analysis
+pandas>=2.1.0
+numpy>=1.26.0
+scipy>=1.11.0
+
+# HTTP & Web
+requests>=2.31.0
+
+# Configuration
+pyyaml>=6.0.1
+
+# Async support (for future enhancements)
+aiohttp>=3.9.0
+
+# Testing (development only)
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0

@@ -5,6 +5,6 @@ This package provides broker connectivity for:
 - Interactive Brokers (IBKR) for HKEX trading
 """
 
-from brokers.ibkr import IBKRClient, get_ibkr_client
+from brokers.ibkr import IBKRClient, get_ibkr_client, init_ibkr_client
 
-__all__ = ["IBKRClient", "get_ibkr_client"]
+__all__ = ["IBKRClient", "get_ibkr_client", "init_ibkr_client"]
