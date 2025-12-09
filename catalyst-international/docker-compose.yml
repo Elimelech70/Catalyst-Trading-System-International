@@ -1,0 +1,106 @@
+# =============================================================================
+# Name of Application: Catalyst Trading System
+# Name of file: docker-compose.yml
+# Version: 1.0.0
+# Last Updated: 2025-12-09
+# Purpose: Docker Compose configuration for autonomous trading agent
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # PostgreSQL Database (self-hosted)
+  postgres:
+    image: postgres:16-alpine
+    container_name: catalyst-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-catalyst}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-catalyst_password}
+      POSTGRES_DB: ${DB_NAME:-catalyst_trading}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-catalyst} -d ${DB_NAME:-catalyst_trading}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - catalyst-network
+
+  # Redis Cache (optional, for future use)
+  redis:
+    image: redis:7-alpine
+    container_name: catalyst-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - catalyst-network
+
+  # Autonomous Trading Agent
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: catalyst-agent
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Claude API
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+
+      # Database
+      DATABASE_URL: postgresql://${DB_USER:-catalyst}:${DB_PASSWORD:-catalyst_password}@postgres:5432/${DB_NAME:-catalyst_trading}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-catalyst_trading}
+      DB_USER: ${DB_USER:-catalyst}
+      DB_PASSWORD: ${DB_PASSWORD:-catalyst_password}
+
+      # IBKR (connect to host machine where TWS/Gateway runs)
+      IBKR_HOST: ${IBKR_HOST:-host.docker.internal}
+      IBKR_PORT: ${IBKR_PORT:-7497}
+      IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-1}
+
+      # Alerts
+      ALERT_WEBHOOK: ${ALERT_WEBHOOK:-}
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      ALERT_EMAIL: ${ALERT_EMAIL:-}
+
+      # Environment
+      ENVIRONMENT: ${ENVIRONMENT:-paper}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+      # Timezone
+      TZ: Asia/Hong_Kong
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - catalyst-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  catalyst-network:
+    driver: bridge
