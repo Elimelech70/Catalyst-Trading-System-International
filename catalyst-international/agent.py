@@ -1,11 +1,15 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: agent.py
-Version: 1.0.0
-Last Updated: 2025-12-06
+Version: 1.1.0
+Last Updated: 2025-12-10
 Purpose: Main AI Agent loop that uses Claude to make trading decisions
 
 REVISION HISTORY:
+v1.1.0 (2025-12-10) - Environment loading fix
+- Added dotenv loading for .env file
+- Updated for IBGA broker integration
+
 v1.0.0 (2025-12-06) - Initial implementation
 - Claude API integration with tool use
 - Agentic loop with tool call handling
@@ -38,6 +42,10 @@ from zoneinfo import ZoneInfo
 
 import anthropic
 import yaml
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from alerts import create_alert_callback, get_alert_sender
 from brokers.ibkr import get_ibkr_client, init_ibkr_client
@@ -190,15 +198,16 @@ class TradingAgent:
         except Exception as e:
             logger.error(f"Database initialization failed: {e}")
 
-        # IBKR
+        # IBKR - Use environment variables directly (YAML doesn't expand ${})
         try:
-            broker_config = self.config.get("broker", {})
-            port = broker_config.get("port", 7497 if self.paper_trading else 7496)
+            host = os.environ.get("IBKR_HOST", "127.0.0.1")
+            port = int(os.environ.get("IBKR_PORT", "4000"))
+            client_id = int(os.environ.get("IBKR_CLIENT_ID", "1"))
 
             init_ibkr_client(
-                host=broker_config.get("host", "127.0.0.1"),
+                host=host,
                 port=port,
-                client_id=broker_config.get("client_id", 1),
+                client_id=client_id,
             )
             logger.info(f"IBKR client initialized (port {port})")
         except Exception as e:
