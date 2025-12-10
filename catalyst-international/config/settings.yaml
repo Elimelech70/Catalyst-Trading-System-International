@@ -22,10 +22,11 @@ exchange:
     - HSTECH   # Hang Seng Tech Index
 
 # Broker Configuration
+# Using IBGA Docker container (heshiming/ibga) with ib_async socket API
 broker:
   name: IBKR
   host: "${IBKR_HOST:-127.0.0.1}"
-  port: ${IBKR_PORT:-7497}  # 7497=paper, 7496=live
+  port: ${IBKR_PORT:-4000}  # IBGA port (4000=paper/live)
   client_id: ${IBKR_CLIENT_ID:-1}
   timeout: 30
 
@@ -57,7 +58,7 @@ risk:
 
 # Claude API Configuration
 claude:
-  model: "claude-sonnet-4-5-20250514"
+  model: "claude-sonnet-4-20250514"
   max_tokens: 4096
   max_iterations: 20              # Max tool call iterations per cycle
   temperature: 0.1                # Low temperature for consistency
