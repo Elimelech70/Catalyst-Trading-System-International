@@ -1,6 +1,21 @@
 # IBKR IBeam Implementation Plan for Catalyst Trading System
 
-## Overview
+---
+
+## ⚠️ DEPRECATED - SUPERSEDED BY IBGA
+
+**Status:** DEPRECATED as of 2025-12-10
+**Replaced By:** IBGA (heshiming/ibga) with ib_async socket API
+**See Instead:** `ibga/SETUP-STATUS.md` and `Documentation/Design/architecture-international-agent-v3.md`
+
+**Why Deprecated:**
+- IBeam Web API approach had authentication issues
+- IBGA with socket API (ib_async) is more reliable
+- Paper trading now fully operational with IBGA
+
+---
+
+## Overview (HISTORICAL)
 
 This plan integrates Interactive Brokers Web API into the Catalyst Trading System using IBeam, a Docker container that automates Client Portal Gateway authentication. This enables automated trading via REST API endpoints.
 

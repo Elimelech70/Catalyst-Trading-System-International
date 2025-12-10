@@ -1,10 +1,22 @@
 # Catalyst Autonomous Agent - Implementation Guide for Claude Code
 
-**Name of Application:** Catalyst Trading System  
-**Name of File:** IMPLEMENTATION-GUIDE.md  
-**Version:** 1.0.0  
-**Last Updated:** 2025-12-09  
+**Name of Application:** Catalyst Trading System
+**Name of File:** IMPLEMENTATION-GUIDE.md
+**Version:** 1.1.0
+**Last Updated:** 2025-12-10
 **Purpose:** Step-by-step implementation guide for Claude Code to build the autonomous trading agent
+
+---
+
+## REVISION HISTORY
+
+**v1.1.0 (2025-12-10)** - Updated for IBGA Integration
+- Updated broker section to reflect IBGA (not IBeam) integration
+- Added broker implementation status (COMPLETE)
+- Updated connection examples to use ib_async
+- Added reference to brokers/ibkr.py v2.1.0
+
+**v1.0.0 (2025-12-09)** - Initial version
 
 ---
 
@@ -1441,19 +1453,52 @@ Purpose: Evaluate market conditions and generate stimuli
 # See CLAUDE.md for stimulus types and thresholds
 ```
 
-### Step 4.3: agent/execution.py
+### Step 4.3: agent/execution.py (COMPLETE - Using brokers/ibkr.py)
 
+**STATUS: ✅ IMPLEMENTED**
+
+The execution engine is implemented in `brokers/ibkr.py` v2.1.0 with the following features:
+- Multi-exchange support (HKEX + US)
+- Auto-detect exchange based on symbol format
+- HKEX tick size rounding (11 tiers)
+- Bracket orders with stop loss/take profit
+- Position and order management
+
+**Connection example:**
 ```python
-"""
-EXECUTION ENGINE - Trade Execution via IBKR
-Name of File: agent/execution.py
-Last Updated: 2025-12-09
-Purpose: Execute trades through Interactive Brokers
-"""
+from brokers.ibkr import IBKRClient
 
-# Implementation for IBKR order execution
-# See ib_insync documentation
+# Initialize and connect
+client = IBKRClient(port=4000, client_id=1)
+client.connect()
+
+# Execute trade
+result = client.execute_trade(
+    symbol='AAPL',  # Auto-detects US (SMART) vs HKEX (SEHK)
+    side='buy',
+    quantity=1,
+    order_type='limit',
+    limit_price=150.00,
+    stop_loss=145.00,
+    take_profit=160.00,
+    reason='Pattern breakout'
+)
+
+# Get portfolio
+portfolio = client.get_portfolio()
+positions = client.get_positions()
+
+# Cleanup
+client.disconnect()
 ```
+
+**Test command:**
+```bash
+cd /root/Catalyst-Trading-System-International/catalyst-international
+IBKR_PORT=4000 python3 scripts/test_ibga_connection.py
+```
+
+See `ibga/SETUP-STATUS.md` for full operational status.
 
 ### Step 4.4: agent/alerts.py
 
@@ -1618,11 +1663,12 @@ docker-compose logs agent | head -50
 - [ ] config/settings.py
 - [ ] sources/market_data.py
 - [ ] tools/*.py
+- [x] brokers/ibkr.py (v2.1.0 - COMPLETE, tested 2025-12-10)
 
 ### Phase 5: Testing
 - [ ] Test database connection
 - [ ] Test Claude API
-- [ ] Test IBKR connection
+- [x] Test IBKR connection (COMPLETE - Paper trading verified 2025-12-10)
 - [ ] End-to-end test
 
 ### Phase 6: Deployment
