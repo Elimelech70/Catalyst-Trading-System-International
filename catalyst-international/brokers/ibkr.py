@@ -1,11 +1,23 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: ibkr.py
-Version: 1.0.0
-Last Updated: 2025-12-06
-Purpose: Interactive Brokers client for HKEX trading
+Version: 2.1.0
+Last Updated: 2025-12-10
+Purpose: Interactive Brokers client for HKEX and US trading
 
 REVISION HISTORY:
+v2.1.0 (2025-12-10) - Multi-exchange support
+- Added _create_contract() with auto-detect exchange
+- Supports HKEX (SEHK) and US (SMART) stocks
+- Auto-detects exchange based on symbol format
+- Numeric symbols -> HKEX, alphabetic -> US
+
+v2.0.0 (2025-12-10) - Migrated to ib_async
+- Switched from ib_insync to ib_async (maintained fork)
+- Uses IBGA Docker for headless IB Gateway with IB Key 2FA
+- Default port 4000 for IBGA connection
+- Added async support with connectAsync
+
 v1.0.0 (2025-12-06) - Initial implementation
 - IBKR TWS/Gateway connection
 - Order execution with bracket orders
@@ -15,7 +27,9 @@ v1.0.0 (2025-12-06) - Initial implementation
 Description:
 This module provides connectivity to Interactive Brokers for trading
 on the Hong Kong Stock Exchange (HKEX). It handles connection management,
-order submission, and portfolio queries using the ib_insync library.
+order submission, and portfolio queries using the ib_async library.
+
+Connects to IB Gateway running in IBGA Docker container on port 4001.
 """
 
 import logging
@@ -25,7 +39,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ib_insync import IB, Contract, LimitOrder, MarketOrder, Order, Stock, Trade
+from ib_async import IB, Contract, LimitOrder, MarketOrder, Order, Stock, Trade
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +92,8 @@ class IBKRClient:
             timeout: Connection timeout in seconds
         """
         self.host = host or os.environ.get("IBKR_HOST", "127.0.0.1")
-        self.port = port or int(os.environ.get("IBKR_PORT", "7497"))
+        # Default to 4000 (IBGA port) instead of 7497 (old TWS port)
+        self.port = port or int(os.environ.get("IBKR_PORT", "4000"))
         self.client_id = client_id or int(os.environ.get("IBKR_CLIENT_ID", "1"))
         self.timeout = timeout
 
@@ -129,8 +144,37 @@ class IBKRClient:
             if not self.connect():
                 raise ConnectionError("Cannot connect to IBKR")
 
+    def _create_contract(self, symbol: str, exchange: str = None) -> Contract:
+        """Create a stock contract.
+
+        Args:
+            symbol: Stock code (e.g., '0700' for HKEX, 'AAPL' for US)
+            exchange: Exchange (SEHK for HKEX, SMART for US). Auto-detects if None.
+
+        Returns:
+            IB Contract object
+        """
+        # Auto-detect exchange based on symbol format
+        if exchange is None:
+            # HKEX symbols are numeric (e.g., 0700, 9988)
+            if symbol.isdigit() or (len(symbol) <= 5 and symbol.replace('0', '').isdigit()):
+                exchange = "SEHK"
+            else:
+                # US stocks use SMART routing
+                exchange = "SMART"
+
+        if exchange == "SEHK":
+            # HKEX symbols - pad with leading zeros
+            symbol = symbol.zfill(4)
+            contract = Stock(symbol, "SEHK", "HKD")
+        else:
+            # US stocks
+            contract = Stock(symbol, "SMART", "USD")
+
+        return contract
+
     def _create_hkex_contract(self, symbol: str) -> Contract:
-        """Create an HKEX stock contract.
+        """Create an HKEX stock contract (legacy method).
 
         Args:
             symbol: Stock code (e.g., '0700')
@@ -138,12 +182,7 @@ class IBKRClient:
         Returns:
             IB Contract object
         """
-        # HKEX symbols in IBKR format
-        # Pad with leading zeros if needed
-        symbol = symbol.zfill(4)
-
-        contract = Stock(symbol, "SEHK", "HKD")
-        return contract
+        return self._create_contract(symbol, "SEHK")
 
     # =========================================================================
     # Quote and Market Data
@@ -160,7 +199,7 @@ class IBKRClient:
         """
         self._ensure_connected()
 
-        contract = self._create_hkex_contract(symbol)
+        contract = self._create_contract(symbol)
 
         # Request market data
         self.ib.qualifyContracts(contract)
@@ -212,7 +251,7 @@ class IBKRClient:
         """
         self._ensure_connected()
 
-        contract = self._create_hkex_contract(symbol)
+        contract = self._create_contract(symbol)
         self.ib.qualifyContracts(contract)
 
         bars = self.ib.reqHistoricalData(
@@ -269,7 +308,7 @@ class IBKRClient:
         """
         self._ensure_connected()
 
-        contract = self._create_hkex_contract(symbol)
+        contract = self._create_contract(symbol)
         self.ib.qualifyContracts(contract)
 
         # Normalize side

@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   ibeam:
-    image: voyzdev/ibeam:latest
+    image: voyz/ibeam:0.5.3
     container_name: catalyst-ibeam
     env_file:
       - .env

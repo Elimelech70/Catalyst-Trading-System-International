@@ -1,0 +1,60 @@
+# IBGA - IB Gateway Automation
+# Headless IB Gateway with IB Key 2FA support
+#
+# Usage:
+#   docker compose up -d
+#   docker logs -f catalyst-ibga
+#
+# When prompted, approve login on IB Key mobile app (2 minute window)
+
+version: '3.8'
+
+services:
+  ibga:
+    build: .
+    image: catalyst-ibga-java17
+    container_name: catalyst-ibga
+    restart: unless-stopped
+    environment:
+      - TERM=xterm
+      # Java location (required for IBGateway 10.41+)
+      # Uses OVERRIDE to bypass strict version checking
+      - INSTALL4J_JAVA_HOME_OVERRIDE=/opt/java/zulu17.0.10-fx
+      # IBKR Credentials
+      - IB_USERNAME=${IB_USERNAME}
+      - IB_PASSWORD=${IB_PASSWORD}
+      # Region and timezone
+      - IB_REGION=Asia
+      - IB_TIMEZONE=Asia/Hong_Kong
+      # Login settings
+      - IB_LOGINTAB=IB API
+      - IB_LOGINTYPE=${IB_LOGINTYPE:-Paper Trading}
+      # Daily logoff (HKT) - set to after market close
+      - IB_LOGOFF=5:00 PM
+      # IB Key preference - auto-approve via mobile
+      - IB_PREFER_IBKEY=true
+      # Logging
+      - IB_APILOG=data
+      - IB_LOGLEVEL=Error
+    volumes:
+      # Persist gateway program and settings
+      - ./run/program:/home/ibg
+      - ./run/settings:/home/ibg_settings
+    ports:
+      # VNC for debugging (optional, can be removed in production)
+      - "5800:5800"
+      # IB Gateway API port (this is what ib_async connects to)
+      # IBGA uses 4000 internally, we map to 4000 on host
+      - "4000:4000"
+    networks:
+      - catalyst-network
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 4000 || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+
+networks:
+  catalyst-network:
+    driver: bridge
