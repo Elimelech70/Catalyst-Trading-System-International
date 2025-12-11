@@ -240,20 +240,20 @@ min_risk_reward: 2.0            # 2:1 minimum
 ## Next Steps
 
 ### Immediate
-1. [ ] Run full cycle during market hours (09:30-12:00 or 13:00-16:00 HKT)
-2. [ ] Verify scan finds candidates with positive momentum
-3. [ ] Check decision logging is comprehensive
+1. [x] Verify scan finds candidates with positive momentum - ✅ 80+ HK stocks scanned
+2. [x] Check decision logging is comprehensive - ✅ Logging to database working
+3. [ ] Run full cycle during active market hours (09:30-12:00 or 13:00-16:00 HKT)
 
 ### Short Term
 1. [ ] Set up cron job for automatic execution
-2. [ ] Configure email alerts (currently not set up)
+2. [ ] Configure email alerts (SMTP vars in .env are empty)
 3. [ ] Monitor for 1 week in paper mode
 
 ### Before Live Trading
 1. [ ] Review all paper trading decisions
 2. [ ] Test emergency close functionality
 3. [ ] Verify stop loss orders execute correctly
-4. [ ] Consider real-time data subscription
+4. [ ] Consider real-time data subscription (currently using 15-min delayed)
 
 ---
 
