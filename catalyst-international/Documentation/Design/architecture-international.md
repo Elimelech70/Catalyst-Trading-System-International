@@ -2,8 +2,8 @@
 
 **Name of Application:** Catalyst Trading System International
 **Name of File:** architecture-international.md
-**Version:** 4.0.0
-**Last Updated:** 2025-12-10
+**Version:** 4.1.0
+**Last Updated:** 2025-12-11
 **Target Exchange:** Hong Kong Stock Exchange (HKEX) + US Markets
 **Broker:** Interactive Brokers (IBKR) via ib_async Socket API
 **Architecture:** AI Agent Pattern (Simple Droplet + Claude API + IBGA)
@@ -11,6 +11,14 @@
 ---
 
 ## REVISION HISTORY
+
+**v4.1.0 (2025-12-11)** - Production Ready Updates
+- Updated IBKRClient to v2.2.0 (delayed data, HK symbol fix, NaN handling)
+- Updated agent.py to v1.2.0 (fixed Claude model name)
+- Updated market.py to v1.1.0 (NaN handling helpers)
+- Clarified: Uses own PostgreSQL database (not shared with US)
+- Added delayed market data documentation (15-min delay, free)
+- Updated known limitations section
 
 **v4.0.0 (2025-12-10)** - IBGA Socket API Integration
 - Replaced IBeam Web API with IBGA (heshiming/ibga) Docker container
@@ -44,7 +52,7 @@ Minimal infrastructure with socket-based broker access:
 - **Cron** (the trigger)
 - **Claude API** (the brain)
 - **IBKR Socket API** (the broker via ib_async)
-- **PostgreSQL** (shared with US)
+- **PostgreSQL** (own DO Managed DB)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -78,7 +86,7 @@ Minimal infrastructure with socket-based broker access:
                     ┌─────────────────┐
                     │   PostgreSQL    │
                     │ (DO Managed DB) │
-                    │ Shared with US  │
+                    │  International  │
                     └─────────────────┘
 ```
 
@@ -152,7 +160,7 @@ catalyst-international/
 │
 ├── brokers/
 │   ├── __init__.py
-│   └── ibkr.py                 # IBKR client via ib_async (v2.1.0)
+│   └── ibkr.py                 # IBKR client via ib_async (v2.2.0)
 │
 ├── data/
 │   ├── __init__.py
@@ -267,14 +275,18 @@ services:
 
 ## 4. IBKRClient Implementation
 
-### 4.1 brokers/ibkr.py (v2.1.0)
+### 4.1 brokers/ibkr.py (v2.2.0)
 
 Key features:
 - Multi-exchange support (HKEX + US)
 - Auto-detect exchange based on symbol format
+- HK symbol normalization (strips leading zeros: 0700 → 700)
+- Delayed market data support (15-min delay, free)
+- NaN handling for market data fields
 - HKEX tick size rounding
 - Bracket orders with stop loss/take profit
 - Position and order management
+- Multi-currency portfolio support (BASE/HKD/USD)
 
 ```python
 # Key methods in IBKRClient:
@@ -299,19 +311,33 @@ def close_all_positions(self, reason) -> list[dict]:
     """Emergency: close all positions"""
 ```
 
-### 4.2 Exchange Auto-Detection
+### 4.2 Exchange Auto-Detection & Symbol Handling
 
 ```python
-# Numeric symbols (0700, 9988) → HKEX (SEHK)
-# Alphabetic symbols (AAPL, MSFT) → US (SMART)
+# Numeric symbols → HKEX (SEHK), leading zeros stripped
+# Alphabetic symbols → US (SMART)
 
 client._create_contract('AAPL')  # → Stock('AAPL', 'SMART', 'USD')
-client._create_contract('0700')  # → Stock('0700', 'SEHK', 'HKD')
+client._create_contract('0700')  # → Stock('700', 'SEHK', 'HKD')  # Note: 0700 → 700
+client._create_contract('9988')  # → Stock('9988', 'SEHK', 'HKD')
+```
+
+### 4.3 Delayed Market Data
+
+```python
+# Enable delayed data after connection (free, 15-min delay)
+self.ib.reqMarketDataType(3)  # Type 3 = Delayed data
+
+# NaN handling for delayed data fields
+def safe_float(val, default=0.0):
+    if val is None or math.isnan(float(val)):
+        return default
+    return float(val)
 ```
 
 ---
 
-## 5. Test Results (2025-12-10)
+## 5. Test Results (2025-12-11)
 
 ### Connection Tests
 
@@ -336,6 +362,9 @@ client._create_contract('0700')  # → Stock('0700', 'SEHK', 'HKD')
 | cancel_order() | ✅ Pass |
 | _round_to_tick() | ✅ Pass (11 cases) |
 | _create_contract() auto-detect | ✅ Pass |
+| HK symbol stripping (0700→700) | ✅ Pass |
+| Delayed market data | ✅ Pass |
+| NaN handling | ✅ Pass |
 | disconnect() | ✅ Pass |
 
 ### Paper Trading Tests
@@ -346,6 +375,9 @@ client._create_contract('0700')  # → Stock('0700', 'SEHK', 'HKD')
 | Place Limit Order | ✅ Pass | Order submitted |
 | Cancel Order | ✅ Pass | Order cancelled |
 | Position Tracking | ✅ Pass | Shows correctly |
+| HK Stock Scan | ✅ Pass | 80+ stocks scanned |
+| Agent Cycle | ✅ Pass | Full loop with Claude API |
+| Decision Logging | ✅ Pass | Logged to database |
 
 ---
 
@@ -431,7 +463,7 @@ http://209.38.87.27:5800
                              │
               ┌──────────────┴──────────────┐
               │       brokers/ibkr.py       │
-              │       IBKRClient v2.1.0     │
+              │       IBKRClient v2.2.0     │
               └──────────────┬──────────────┘
                              │
               ┌──────────────┴──────────────┐
@@ -452,22 +484,28 @@ http://209.38.87.27:5800
 | Item | Cost |
 |------|------|
 | DO Droplet (Basic, 1GB) | $6 |
-| DO Managed PostgreSQL (shared) | $0 (already have) |
+| DO Managed PostgreSQL | $15 |
 | Claude API (~200 cycles × 5K tokens) | ~$15-25 |
-| IBKR Data (US included, HKEX extra) | ~$0-20 |
-| **Total** | **~$21-51/month** |
+| IBKR Data (delayed=free, real-time=~$20) | $0-20 |
+| **Total** | **~$36-66/month** |
 
 ---
 
 ## 9. Known Limitations
 
-1. **Market data shows nan outside market hours** - Normal behavior
-2. **Account balance may show 0** - Paper account needs reset in IBKR portal
-3. **HKEX market data** - May require additional subscription
+1. **Delayed market data (15-min)** - Using free delayed data; real-time requires ~HKD 130/month subscription
+2. **Account currency mismatch** - Paper account funded in AUD, trading HK stocks in HKD (currency conversion on trades)
+3. **Scan performance** - ~2 minutes for 80 stocks (sequential API calls)
+4. **Stock 6837** - Not found in IBKR, removed from scan list
+
+### Resolved Issues (v2.2.0)
+- ~~Market data shows nan~~ → Fixed with safe_float() helpers
+- ~~HK symbols with leading zeros rejected~~ → Fixed with symbol stripping (0700→700)
+- ~~Portfolio shows $0~~ → Fixed with BASE/HKD currency detection
 
 ---
 
-**Document Version:** 4.0.0
+**Document Version:** 4.1.0
 **Architecture:** Simple Droplet + Claude API + IBGA Socket API
-**Monthly Cost:** ~$21-51
-**Status:** Paper Trading Ready
+**Monthly Cost:** ~$36-66
+**Status:** Paper Trading Active
