@@ -101,7 +101,7 @@ alerts:
   on_emergency_close: true
   on_error: true
 
-# Database (shared with US system)
+# Database (DigitalOcean Managed PostgreSQL - International)
 database:
   host: "${DB_HOST}"
   port: ${DB_PORT:-5432}
