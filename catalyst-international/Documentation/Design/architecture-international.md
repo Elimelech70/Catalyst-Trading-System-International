@@ -1,7 +1,7 @@
 # Catalyst Trading System International - Agent Architecture
 
 **Name of Application:** Catalyst Trading System International
-**Name of File:** architecture-international-agent-v3.md
+**Name of File:** architecture-international.md
 **Version:** 4.0.0
 **Last Updated:** 2025-12-10
 **Target Exchange:** Hong Kong Stock Exchange (HKEX) + US Markets
@@ -464,18 +464,6 @@ http://209.38.87.27:5800
 1. **Market data shows nan outside market hours** - Normal behavior
 2. **Account balance may show 0** - Paper account needs reset in IBKR portal
 3. **HKEX market data** - May require additional subscription
-
----
-
-## 10. Next Steps
-
-1. ✅ IBGA setup complete
-2. ✅ IBKRClient tested and working
-3. ⬜ Implement full agent.py with Claude integration
-4. ⬜ Add market data fetching
-5. ⬜ Add news/sentiment tools
-6. ⬜ Set up cron scheduling
-7. ⬜ Test with live HKEX market
 
 ---
 
