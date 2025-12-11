@@ -1,11 +1,16 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: ibkr.py
-Version: 2.1.0
-Last Updated: 2025-12-10
+Version: 2.2.0
+Last Updated: 2025-12-11
 Purpose: Interactive Brokers client for HKEX and US trading
 
 REVISION HISTORY:
+v2.2.0 (2025-12-11) - Delayed market data + symbol fix
+- Added reqMarketDataType(3) to enable delayed data (no subscription needed)
+- Fixed HK symbol format: strip leading zeros (0700 -> 700)
+- IBKR rejects symbols like "0700", requires "700"
+
 v2.1.0 (2025-12-10) - Multi-exchange support
 - Added _create_contract() with auto-detect exchange
 - Supports HKEX (SEHK) and US (SMART) stocks
@@ -117,6 +122,12 @@ class IBKRClient:
                 timeout=self.timeout,
             )
             self._connected = True
+
+            # Enable delayed market data (15-min delay, no subscription required)
+            # Type 3 = Delayed data, Type 4 = Delayed frozen
+            self.ib.reqMarketDataType(3)
+            logger.info("Enabled delayed market data (15-min delay)")
+
             logger.info(
                 f"Connected to IBKR at {self.host}:{self.port} (client {self.client_id})"
             )
@@ -148,7 +159,7 @@ class IBKRClient:
         """Create a stock contract.
 
         Args:
-            symbol: Stock code (e.g., '0700' for HKEX, 'AAPL' for US)
+            symbol: Stock code (e.g., '0700' or '700' for HKEX, 'AAPL' for US)
             exchange: Exchange (SEHK for HKEX, SMART for US). Auto-detects if None.
 
         Returns:
@@ -164,8 +175,9 @@ class IBKRClient:
                 exchange = "SMART"
 
         if exchange == "SEHK":
-            # HKEX symbols - pad with leading zeros
-            symbol = symbol.zfill(4)
+            # HKEX symbols - IBKR requires NO leading zeros
+            # Convert "0700" -> "700", "0005" -> "5"
+            symbol = symbol.lstrip('0') or '0'  # Keep at least one '0' for symbol "0000"
             contract = Stock(symbol, "SEHK", "HKD")
         else:
             # US stocks
@@ -208,19 +220,30 @@ class IBKRClient:
         # Wait for data
         self.ib.sleep(1)
 
+        # Helper to safely convert to float, handling NaN
+        def safe_float(val, default=0.0):
+            import math
+            if val is None:
+                return default
+            try:
+                f = float(val)
+                return default if math.isnan(f) else f
+            except (ValueError, TypeError):
+                return default
+
         # Build quote response
         quote = {
             "symbol": symbol,
             "name": contract.localSymbol or symbol,
-            "last": ticker.last if ticker.last else ticker.close,
-            "bid": ticker.bid if ticker.bid else 0,
-            "ask": ticker.ask if ticker.ask else 0,
-            "volume": int(ticker.volume) if ticker.volume else 0,
+            "last": safe_float(ticker.last) or safe_float(ticker.close),
+            "bid": safe_float(ticker.bid),
+            "ask": safe_float(ticker.ask),
+            "volume": int(safe_float(ticker.volume)),
             "avg_volume": 0,  # Would need historical data
-            "high": ticker.high if ticker.high else 0,
-            "low": ticker.low if ticker.low else 0,
-            "open": ticker.open if ticker.open else 0,
-            "prev_close": ticker.close if ticker.close else 0,
+            "high": safe_float(ticker.high),
+            "low": safe_float(ticker.low),
+            "open": safe_float(ticker.open),
+            "prev_close": safe_float(ticker.close),
             "change": 0,
             "change_pct": 0,
             "market_cap": 0,
@@ -543,12 +566,25 @@ class IBKRClient:
         # Get account values
         account_values = self.ib.accountValues()
 
-        # Extract key metrics
+        # Extract key metrics - check BASE currency first, then HKD, then any
         cash = 0
         equity = 0
         unrealized_pnl = 0
         realized_pnl = 0
 
+        # First pass: look for BASE currency (account default)
+        for av in account_values:
+            if av.currency == "BASE":
+                if av.tag == "CashBalance":
+                    cash = float(av.value)
+                elif av.tag == "NetLiquidation":
+                    equity = float(av.value)
+                elif av.tag == "UnrealizedPnL":
+                    unrealized_pnl = float(av.value)
+                elif av.tag == "RealizedPnL":
+                    realized_pnl = float(av.value)
+
+        # Second pass: override with HKD if trading HK stocks
         for av in account_values:
             if av.currency == "HKD":
                 if av.tag == "CashBalance":
