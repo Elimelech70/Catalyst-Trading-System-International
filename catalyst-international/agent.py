@@ -1,11 +1,14 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: agent.py
-Version: 1.1.0
-Last Updated: 2025-12-10
+Version: 1.2.0
+Last Updated: 2025-12-11
 Purpose: Main AI Agent loop that uses Claude to make trading decisions
 
 REVISION HISTORY:
+v1.2.0 (2025-12-11) - Fixed model name
+- Corrected fallback model from claude-sonnet-4-5 to claude-sonnet-4
+
 v1.1.0 (2025-12-10) - Environment loading fix
 - Added dotenv loading for .env file
 - Updated for IBGA broker integration
@@ -168,7 +171,7 @@ class TradingAgent:
             api_key=os.environ.get("ANTHROPIC_API_KEY")
         )
         self.model = self.config.get("claude", {}).get(
-            "model", "claude-sonnet-4-5-20250514"
+            "model", "claude-sonnet-4-20250514"
         )
         self.max_tokens = self.config.get("claude", {}).get("max_tokens", 4096)
         self.max_iterations = self.config.get("claude", {}).get("max_iterations", 20)

@@ -6,9 +6,13 @@ This module provides:
 - Historical price data
 - Technical indicators (RSI, MACD, Moving Averages, etc.)
 - Market scanning functionality
+
+v1.1.0 (2025-12-11) - NaN handling for delayed data
+- Added safe_float() helper to handle NaN values from delayed market data
 """
 
 import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -17,6 +21,22 @@ import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+def safe_float(val, default=0.0):
+    """Safely convert value to float, handling NaN."""
+    if val is None:
+        return default
+    try:
+        f = float(val)
+        return default if math.isnan(f) else f
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_int(val, default=0):
+    """Safely convert value to int, handling NaN."""
+    return int(safe_float(val, default))
 
 
 @dataclass
@@ -116,27 +136,27 @@ class MarketData:
         # Fetch from IBKR
         data = self.ibkr.get_quote(symbol)
 
-        # Calculate volume ratio
-        avg_volume = data.get("avg_volume", 1)
-        volume = data.get("volume", 0)
+        # Calculate volume ratio (handle NaN from delayed data)
+        avg_volume = safe_int(data.get("avg_volume"), 1)
+        volume = safe_int(data.get("volume"), 0)
         volume_ratio = volume / avg_volume if avg_volume > 0 else 0
 
         return {
             "symbol": symbol,
             "name": data.get("name", symbol),
-            "price": data.get("last", 0),
-            "bid": data.get("bid", 0),
-            "ask": data.get("ask", 0),
+            "price": safe_float(data.get("last")),
+            "bid": safe_float(data.get("bid")),
+            "ask": safe_float(data.get("ask")),
             "volume": volume,
             "avg_volume": avg_volume,
             "volume_ratio": round(volume_ratio, 2),
-            "change": data.get("change", 0),
-            "change_pct": data.get("change_pct", 0),
-            "day_high": data.get("high", 0),
-            "day_low": data.get("low", 0),
-            "open": data.get("open", 0),
-            "prev_close": data.get("prev_close", 0),
-            "market_cap": data.get("market_cap", 0),
+            "change": safe_float(data.get("change")),
+            "change_pct": safe_float(data.get("change_pct")),
+            "day_high": safe_float(data.get("high")),
+            "day_low": safe_float(data.get("low")),
+            "open": safe_float(data.get("open")),
+            "prev_close": safe_float(data.get("prev_close")),
+            "market_cap": safe_float(data.get("market_cap")),
             "lot_size": 100,  # HKEX board lot
             "timestamp": datetime.now().isoformat(),
         }
@@ -476,7 +496,7 @@ class MarketData:
             "3968",
             "3988",
             "6030",
-            "6837",
+            # "6837",  # Removed - not found in IBKR
         ]
 
         # HSTECH technology
