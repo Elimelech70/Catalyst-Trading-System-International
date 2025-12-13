@@ -1,11 +1,18 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: ibkr.py
-Version: 2.2.0
-Last Updated: 2025-12-11
+Version: 2.3.0
+Last Updated: 2025-12-13
 Purpose: Interactive Brokers client for HKEX and US trading
 
 REVISION HISTORY:
+v2.3.0 (2025-12-13) - CRITICAL: Proper bracket order implementation
+- Fixed bracket orders to use parent-child linking (parentId)
+- Added OCA (One-Cancels-All) group so stop and target cancel each other
+- Used transmit=False for atomic order submission
+- Prevents orphan orders and crash-during-fill vulnerability
+- See: international-preflight-checklist.md for issue details
+
 v2.2.0 (2025-12-11) - Delayed market data + symbol fix
 - Added reqMarketDataType(3) to enable delayed data (no subscription needed)
 - Fixed HK symbol format: strip leading zeros (0700 -> 700)
@@ -314,62 +321,137 @@ class IBKRClient:
         take_profit: float | None = None,
         reason: str = "",
     ) -> dict:
-        """Execute a trade with optional bracket orders.
+        """Execute a trade with proper bracket orders (parent-child linked).
+
+        v2.3.0: Uses IBKR's proper bracket order structure:
+        - Parent order linked to stop/target via parentId
+        - OCA (One-Cancels-All) group prevents both stop and target from filling
+        - Atomic submission (transmit=False until last order)
+        - Crash-safe: all orders submitted together or none
 
         Args:
             symbol: Stock code
-            side: 'buy' or 'sell'
+            side: 'buy', 'sell', 'long', or 'short'
             quantity: Number of shares
             order_type: 'market' or 'limit'
             limit_price: Price for limit orders
-            stop_loss: Stop loss price
-            take_profit: Take profit price
+            stop_loss: Stop loss price (creates linked stop order)
+            take_profit: Take profit price (creates linked limit order)
             reason: Trade reason for logging
 
         Returns:
-            Order result dictionary
+            Order result dictionary with parent and child order IDs
         """
         self._ensure_connected()
 
         contract = self._create_contract(symbol)
         self.ib.qualifyContracts(contract)
 
-        # Normalize side
-        action = "BUY" if side.lower() in ["buy", "long"] else "SELL"
-
-        # Create main order
-        if order_type.lower() == "limit" and limit_price:
-            # Round to valid tick size (HKEX has specific tick sizes)
-            limit_price = self._round_to_tick(limit_price)
-            main_order = LimitOrder(action, quantity, limit_price)
+        # Normalize side - handle buy/sell/long/short
+        side_lower = side.lower()
+        if side_lower in ["buy", "long"]:
+            action = "BUY"
+        elif side_lower in ["sell", "short"]:
+            action = "SELL"
         else:
-            main_order = MarketOrder(action, quantity)
+            raise ValueError(f"Invalid side: {side}. Must be buy/sell/long/short")
 
-        main_order.tif = "DAY"
+        reverse_action = "SELL" if action == "BUY" else "BUY"
 
-        # Submit main order
-        trade = self.ib.placeOrder(contract, main_order)
+        # Determine if we need bracket orders
+        has_bracket = stop_loss is not None or take_profit is not None
+
+        # Create parent order
+        parent = Order()
+        parent.orderId = self.ib.client.getReqId()
+        parent.action = action
+        parent.totalQuantity = quantity
+        parent.tif = "DAY"
+
+        if order_type.lower() == "limit" and limit_price:
+            parent.orderType = "LMT"
+            parent.lmtPrice = self._round_to_tick(limit_price)
+        else:
+            parent.orderType = "MKT"
+
+        # If bracket orders, don't transmit parent yet
+        parent.transmit = not has_bracket
+
+        # Submit parent order
+        parent_trade = self.ib.placeOrder(contract, parent)
+
+        # Create bracket orders if needed
+        stop_order_id = None
+        take_profit_order_id = None
+        oca_group = f"OCA_{parent.orderId}_{symbol}"
+
+        if stop_loss is not None:
+            stop_order = Order()
+            stop_order.orderId = self.ib.client.getReqId()
+            stop_order.action = reverse_action
+            stop_order.totalQuantity = quantity
+            stop_order.orderType = "STP"
+            stop_order.auxPrice = self._round_to_tick(stop_loss)
+            stop_order.parentId = parent.orderId  # LINK TO PARENT
+            stop_order.tif = "GTC"
+
+            # OCA group - if take profit also exists, they cancel each other
+            if take_profit is not None:
+                stop_order.ocaGroup = oca_group
+                stop_order.ocaType = 1  # Cancel remaining orders with block
+
+            # Don't transmit yet if take profit also exists
+            stop_order.transmit = take_profit is None
+
+            self.ib.placeOrder(contract, stop_order)
+            stop_order_id = str(stop_order.orderId)
+            logger.info(
+                f"Stop order linked: {reverse_action} {quantity} {symbol} @ {stop_loss} "
+                f"(parentId={parent.orderId})"
+            )
+
+        if take_profit is not None:
+            tp_order = Order()
+            tp_order.orderId = self.ib.client.getReqId()
+            tp_order.action = reverse_action
+            tp_order.totalQuantity = quantity
+            tp_order.orderType = "LMT"
+            tp_order.lmtPrice = self._round_to_tick(take_profit)
+            tp_order.parentId = parent.orderId  # LINK TO PARENT
+            tp_order.tif = "GTC"
+
+            # OCA group with stop order
+            if stop_loss is not None:
+                tp_order.ocaGroup = oca_group
+                tp_order.ocaType = 1
+
+            # Transmit now - sends all orders atomically
+            tp_order.transmit = True
+
+            self.ib.placeOrder(contract, tp_order)
+            take_profit_order_id = str(tp_order.orderId)
+            logger.info(
+                f"Take profit order linked: {reverse_action} {quantity} {symbol} @ {take_profit} "
+                f"(parentId={parent.orderId}, ocaGroup={oca_group})"
+            )
+
+        # Wait for order processing
         self.ib.sleep(1)
 
         # Get fill info
         filled_price = None
         filled_qty = 0
 
-        if trade.orderStatus.status == "Filled":
-            filled_price = trade.orderStatus.avgFillPrice
-            filled_qty = int(trade.orderStatus.filled)
-
-            # Place bracket orders if we have stop/target
-            if stop_loss:
-                self._place_stop_order(contract, symbol, action, filled_qty, stop_loss)
-            if take_profit:
-                self._place_take_profit_order(
-                    contract, symbol, action, filled_qty, take_profit
-                )
+        if parent_trade.orderStatus.status == "Filled":
+            filled_price = parent_trade.orderStatus.avgFillPrice
+            filled_qty = int(parent_trade.orderStatus.filled)
 
         result = {
-            "order_id": str(trade.order.orderId),
-            "status": trade.orderStatus.status,
+            "order_id": str(parent.orderId),
+            "stop_order_id": stop_order_id,
+            "take_profit_order_id": take_profit_order_id,
+            "oca_group": oca_group if has_bracket else None,
+            "status": parent_trade.orderStatus.status,
             "symbol": symbol,
             "side": side,
             "quantity": quantity,
@@ -379,11 +461,13 @@ class IBKRClient:
             "stop_loss": stop_loss,
             "take_profit": take_profit,
             "reason": reason,
+            "bracket_linked": has_bracket,
             "timestamp": datetime.now(HK_TZ).isoformat(),
         }
 
         logger.info(
-            f"Order executed: {action} {quantity} {symbol} @ {filled_price or 'pending'}"
+            f"Bracket order submitted: {action} {quantity} {symbol} @ {filled_price or 'pending'} "
+            f"(bracket={has_bracket}, stop={stop_loss}, target={take_profit})"
         )
 
         return result
@@ -396,7 +480,11 @@ class IBKRClient:
         quantity: int,
         stop_price: float,
     ) -> Trade:
-        """Place a stop loss order."""
+        """Place a standalone stop loss order (legacy - prefer bracket orders).
+
+        Note: For new trades, use execute_trade() with stop_loss parameter
+        which creates properly linked bracket orders.
+        """
         # Reverse action for stop
         action = "SELL" if parent_action == "BUY" else "BUY"
 
@@ -422,7 +510,11 @@ class IBKRClient:
         quantity: int,
         target_price: float,
     ) -> Trade:
-        """Place a take profit limit order."""
+        """Place a standalone take profit order (legacy - prefer bracket orders).
+
+        Note: For new trades, use execute_trade() with take_profit parameter
+        which creates properly linked bracket orders.
+        """
         action = "SELL" if parent_action == "BUY" else "BUY"
 
         target_price = self._round_to_tick(target_price)
