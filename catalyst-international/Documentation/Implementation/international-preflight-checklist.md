@@ -262,7 +262,8 @@ crontab -l | grep -i catalyst
 ## Go/No-Go Decision
 
 ### MUST FIX before Monday:
-- [ ] Bracket orders create linked parent-child structure (not separate orders)
+- [x] Bracket orders create linked parent-child structure (not separate orders)
+      **FIXED in ibkr.py v2.3.0 (2025-12-13)** - See commit 5c2a101
 
 ### SHOULD verify before Monday:
 - [ ] All 10 checklist items pass
