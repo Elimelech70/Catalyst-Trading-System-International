@@ -1,18 +1,73 @@
-# IBKR Integration Summary
+# Current Focus - Catalyst International
 
-**Date:** 2025-12-11
-**Status:** Cron Scheduled - First Automated Run Mon Dec 15
-**Last Updated:** 2025-12-13 18:00 HKT
+**Date:** 2025-12-13
+**Status:** Ready for Automated Paper Trading
+**Last Updated:** 2025-12-13 20:00 HKT
+**First Automated Run:** Monday Dec 15, 09:30 HKT
 
 ---
 
 ## Executive Summary
 
-The Catalyst International trading agent is now functional with IBKR via delayed market data. All blocking issues have been resolved. The system successfully connected, scanned 80+ HK stocks, and logged decisions to the database.
+The Catalyst International trading agent is fully configured and ready for automated paper trading. All blocking issues resolved, cron scheduled, and lessons learned from US system have been analyzed and incorporated into CLAUDE.md v2.2.0.
 
 ---
 
-## Work Completed
+## Latest Updates (2025-12-13)
+
+### Cron Scheduling - COMPLETE
+```cron
+# Morning session (09:30 HKT = 01:30 UTC)
+30 1 * * 1-5 cd /root/Catalyst-Trading-System-International/catalyst-international && ./venv/bin/python3 agent.py >> logs/cron.log 2>&1
+
+# Afternoon session (13:00 HKT = 05:00 UTC)
+0 5 * * 1-5 cd /root/Catalyst-Trading-System-International/catalyst-international && ./venv/bin/python3 agent.py >> logs/cron.log 2>&1
+```
+
+### US Lessons Gap Analysis - COMPLETE
+
+Analyzed 6 critical lessons from US system operations:
+
+| Lesson | US Issue | IBKR Status |
+|--------|----------|-------------|
+| Order Mapping Bug | `"long"` → wrong side | ✅ Fixed |
+| Broker Reconciliation | Phantom positions | ✅ By architecture |
+| Position Sizing | Share-based (10x variance) | ⚠️ Guidance added |
+| Profit Taking | No exit rules | ✅ Claude decides |
+| Drawdown Analysis | No forensics | ✅ `log_decision` |
+| Risk Limits | Working | ✅ Maintained |
+
+**New Risk Identified:** Delayed data (15-min) requires discipline - use limit orders, wider stops.
+
+**Full Analysis:** `Documentation/Analysis/2025-12-13-Lessons-Gap-Analysis.md`
+
+### CLAUDE.md Updated to v2.2.0
+
+Added IBKR-specific lessons and rules:
+
+**New Lessons (11-14):**
+- Lesson 11: HKEX Tick Size Compliance
+- Lesson 12: Delayed Data Trading Rules
+- Lesson 13: HK Symbol Format
+- Lesson 14: Dollar-Based Position Sizing
+
+**New NEVER Rules (15-20):**
+- Never use market orders with delayed data
+- Never chase momentum with 15-min delay
+- Never use tight stops (< 3%)
+- Never trade news < 30 min old
+- Never use leading zeros in HK symbols
+- Never size by shares alone
+
+**New ALWAYS Rules (15-22):**
+- Always use limit orders
+- Always round to HKEX tick size
+- Always wait 30 min after market open
+- Always set wider stops (3-5%)
+
+---
+
+## Work Completed (Dec 11)
 
 ### 1. Enabled Delayed Market Data (Free)
 
@@ -231,6 +286,9 @@ min_risk_reward: 2.0            # 2:1 minimum
 
 | File | Version | Changes |
 |------|---------|---------|
+| `CLAUDE.md` | 2.2.0 | Added IBKR lessons 11-14, updated NEVER/ALWAYS rules |
+| `architecture-international.md` | 4.2.0 | Added cron schedule, operational hours |
+| `IMPLEMENTATION-GUIDE.md` | 1.2.0 | Updated checklist with completed items |
 | `brokers/ibkr.py` | 2.2.0 | Delayed data, symbol fix, NaN handling, portfolio currency |
 | `data/market.py` | 1.1.0 | NaN handling, removed 6837 |
 | `agent.py` | 1.2.0 | Fixed model name fallback |
@@ -239,23 +297,26 @@ min_risk_reward: 2.0            # 2:1 minimum
 
 ## Next Steps
 
-### Immediate
+### Immediate (Mon Dec 15)
 1. [x] Verify scan finds candidates with positive momentum - ✅ 80+ HK stocks scanned
 2. [x] Check decision logging is comprehensive - ✅ Logging to database working
-3. [ ] Run full cycle during active market hours (09:30-12:00 or 13:00-16:00 HKT) - **Scheduled for Mon Dec 15**
+3. [x] Set up cron job for automatic execution - ✅ **COMPLETED 2025-12-13**
+4. [x] Analyze US lessons and update CLAUDE.md - ✅ **COMPLETED 2025-12-13**
+5. [ ] First automated run during active market hours - **Mon Dec 15, 09:30 HKT**
 
-### Short Term
-1. [x] Set up cron job for automatic execution - ✅ **COMPLETED 2025-12-13**
-   - Morning session: 09:30 HKT (01:30 UTC)
-   - Afternoon session: 13:00 HKT (05:00 UTC)
-2. [ ] Configure email alerts (SMTP vars in .env are empty)
-3. [ ] Monitor for 1 week in paper mode - **Starts Mon Dec 15**
+### This Week (Dec 15-20)
+1. [ ] Monitor first automated trading cycles
+2. [ ] Review agent logs after each session
+3. [ ] Configure email alerts (SMTP vars in .env are empty)
+4. [ ] Verify no phantom position drift (broker = source of truth)
 
-### Before Live Trading
-1. [ ] Review all paper trading decisions
-2. [ ] Test emergency close functionality
-3. [ ] Verify stop loss orders execute correctly
-4. [ ] Consider real-time data subscription (currently using 15-min delayed)
+### Before Live Trading (After 1 Week Paper)
+1. [ ] Complete 1 week of paper trading (Dec 15-20)
+2. [ ] Review all logged decisions and reasoning
+3. [ ] Test emergency close functionality
+4. [ ] Verify stop loss orders execute correctly
+5. [ ] Analyze P&L consistency
+6. [ ] Consider real-time data subscription (HKD 130/month)
 
 ---
 
