@@ -1,14 +1,22 @@
 # CLAUDE.md - Catalyst Trading System
 
-**Name of Application**: Catalyst Trading System  
-**Name of file**: CLAUDE.md  
-**Version**: 2.1.1  
-**Last Updated**: 2025-12-06  
+**Name of Application**: Catalyst Trading System
+**Name of file**: CLAUDE.md
+**Version**: 2.2.0
+**Last Updated**: 2025-12-13
 **Purpose**: Complete operational guidelines for Claude Code on production systems
 
 ---
 
 ## REVISION HISTORY
+
+**v2.2.0 (2025-12-13)** - IBKR-SPECIFIC LESSONS LEARNED
+- Added Lessons 11-14 for IBKR/HKEX trading
+- Added delayed data trading rules
+- Added HKEX tick size compliance
+- Added dollar-based position sizing for IBKR
+- Updated NEVER/ALWAYS sections with IBKR rules
+- Based on gap analysis of US system lessons
 
 **v2.1.1 (2025-12-06)** - COMPLETE TOOL DEFINITIONS
 - Added all 12 tool definitions with full input schemas
@@ -408,6 +416,86 @@ assets = alpaca_client.get_all_assets(
 
 ---
 
+## 🌏 IBKR-SPECIFIC LESSONS (International System)
+
+These lessons are specific to trading HKEX via Interactive Brokers:
+
+### Lesson 11: HKEX Tick Size Compliance
+**Problem**: HKEX has 11-tier tick size rules - incorrect prices rejected
+**Solution**: Always round prices to valid tick size before submission
+
+```python
+# brokers/ibkr.py:440-479 - IMPLEMENTED
+def _round_to_tick(self, price: float) -> float:
+    """HKEX tick sizes vary by price tier"""
+    if price < 0.25:
+        tick = 0.001
+    elif price < 0.50:
+        tick = 0.005
+    elif price < 10.00:
+        tick = 0.01
+    elif price < 20.00:
+        tick = 0.02
+    elif price < 100.00:
+        tick = 0.05
+    # ... continues for 11 tiers up to 5.00 for prices > 5000
+    return round(round(price / tick) * tick, 3)
+```
+
+**Status**: ✅ Implemented in `brokers/ibkr.py`
+
+### Lesson 12: Delayed Data Trading Rules ⚠️
+**Problem**: Using 15-minute delayed market data (no real-time subscription)
+**Impact**: Entry prices may drift, stop losses may trigger late, signals may be stale
+
+**Rules for Delayed Data Trading:**
+```
+✅ ALWAYS use LIMIT orders, not market orders
+✅ Set stop losses 1-2% wider than real-time would require
+✅ Prefer less volatile stocks (avoid momentum plays)
+✅ Check volume - high volume = more reliable delayed quotes
+✅ Avoid trading first 30 minutes after market open
+
+❌ NEVER chase fast-moving momentum stocks
+❌ NEVER use tight stops (< 3%) with delayed data
+❌ NEVER trade on news that's less than 30 minutes old
+```
+
+**Status**: ⚠️ Risk acknowledged - must follow rules above
+
+### Lesson 13: HK Symbol Format
+**Problem**: IBKR rejects "0700", requires "700" (no leading zeros)
+**Solution**: Strip leading zeros from all HK symbols
+
+```python
+# brokers/ibkr.py:180 - IMPLEMENTED
+symbol = symbol.lstrip('0') or '0'  # "0700" → "700", "0005" → "5"
+```
+
+**Status**: ✅ Implemented in `brokers/ibkr.py`
+
+### Lesson 14: Dollar-Based Position Sizing (IBKR)
+**Problem**: Share-based sizing creates uneven exposure (US system had 10x variance)
+**Solution**: Calculate target dollar value first, then convert to shares
+
+```python
+# Calculate dollar-based position size
+portfolio_value = get_portfolio()["equity"]
+target_pct = 0.18  # 18% of portfolio per position
+target_value = portfolio_value * target_pct
+
+# Convert to shares, round to lot size (100 for HKEX)
+current_price = get_quote(symbol)["last"]
+quantity = int(target_value / current_price / 100) * 100
+
+# Example: $1,000,000 portfolio, 18% target = $180,000
+# Stock at HKD 380 → 180000 / 380 / 100 * 100 = 400 shares
+```
+
+**Status**: ⚠️ Agent must follow this pattern - not enforced in code
+
+---
+
 ## 🔧 Implementation Workflow
 
 ### Before ANY Code Change
@@ -599,6 +687,7 @@ scp -i ~/.ssh/id_rsa root@<DROPLET_IP>:/root/catalyst-trading-mcp/services/*/*.p
 
 ## ⛔ NEVER DO THESE
 
+### General Rules (US + International)
 1. **NEVER** modify production database schema without backup
 2. **NEVER** deploy to production without testing on paper first
 3. **NEVER** ignore version headers - always update them
@@ -607,17 +696,26 @@ scp -i ~/.ssh/id_rsa root@<DROPLET_IP>:/root/catalyst-trading-mcp/services/*/*.p
 6. **NEVER** skip the three questions at the top of this file
 7. **NEVER** use symbol VARCHAR in queries - use security_id FK
 8. **NEVER** hardcode API keys - use environment variables
-9. **NEVER** use simple ternary for order side conversion - use `_normalize_side()`
-10. **NEVER** trust that "buy"/"sell" is the only valid input - always handle "long"/"short"
-11. **NEVER** submit prices with more than 2 decimal places
+9. **NEVER** use simple ternary for order side conversion - handle "long"/"short"
+10. **NEVER** trust that "buy"/"sell" is the only valid input
+11. **NEVER** submit prices with more than 2 decimal places (US) or invalid tick sizes (HKEX)
 12. **NEVER** use bare `except:` statements - use specific exceptions
 13. **NEVER** start services without verifying helper functions exist
 14. **NEVER** hardcode stock lists - use dynamic discovery
+
+### IBKR-Specific Rules (International)
+15. **NEVER** use market orders with delayed data - use limit orders
+16. **NEVER** chase momentum stocks with 15-min delayed data
+17. **NEVER** use tight stops (< 3%) with delayed data
+18. **NEVER** trade on news less than 30 minutes old (delayed data drift)
+19. **NEVER** submit HK symbols with leading zeros (use "700" not "0700")
+20. **NEVER** size positions by shares alone - use dollar-based sizing
 
 ---
 
 ## ✅ ALWAYS DO THESE
 
+### General Rules (US + International)
 1. **ALWAYS** read design docs before implementing
 2. **ALWAYS** verify database schema before INSERT/UPDATE
 3. **ALWAYS** update version header after changes
@@ -626,12 +724,24 @@ scp -i ~/.ssh/id_rsa root@<DROPLET_IP>:/root/catalyst-trading-mcp/services/*/*.p
 6. **ALWAYS** use helper functions for security_id/time_id
 7. **ALWAYS** test on paper trading before live
 8. **ALWAYS** make prioritized list for complex changes
-9. **ALWAYS** run `python3 scripts/test_order_side.py` before trading sessions
-10. **ALWAYS** verify order logs show correct side mapping (long→buy, short→sell)
-11. **ALWAYS** round prices to 2 decimal places before Alpaca submission
-12. **ALWAYS** use specific exception types with proper logging
-13. **ALWAYS** verify helper functions exist at service startup
+9. **ALWAYS** verify order logs show correct side mapping (long→buy, short→sell)
+10. **ALWAYS** use specific exception types with proper logging
+11. **ALWAYS** verify helper functions exist at service startup
+
+### US-Specific Rules (Alpaca)
+12. **ALWAYS** run `python3 scripts/test_order_side.py` before trading sessions
+13. **ALWAYS** round prices to 2 decimal places before Alpaca submission
 14. **ALWAYS** use Alpaca Assets API for dynamic stock universe
+
+### IBKR-Specific Rules (International)
+15. **ALWAYS** use limit orders with delayed market data
+16. **ALWAYS** round prices to valid HKEX tick size (`_round_to_tick()`)
+17. **ALWAYS** strip leading zeros from HK symbols before submission
+18. **ALWAYS** calculate position size in dollars first, then convert to shares
+19. **ALWAYS** use lot size of 100 for HKEX stocks (round quantity to 100s)
+20. **ALWAYS** set wider stops (3-5%) to account for 15-min data delay
+21. **ALWAYS** wait 30 minutes after market open before trading (delayed data settles)
+22. **ALWAYS** check `get_portfolio()` for current positions before new trades
 
 ---
 
