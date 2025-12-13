@@ -1,8 +1,8 @@
 # IBKR Integration Summary
 
 **Date:** 2025-12-11
-**Status:** Ready for Live Testing
-**Last Updated:** 2025-12-11 12:30 HKT
+**Status:** Cron Scheduled - First Automated Run Mon Dec 15
+**Last Updated:** 2025-12-13 18:00 HKT
 
 ---
 
@@ -242,12 +242,14 @@ min_risk_reward: 2.0            # 2:1 minimum
 ### Immediate
 1. [x] Verify scan finds candidates with positive momentum - ✅ 80+ HK stocks scanned
 2. [x] Check decision logging is comprehensive - ✅ Logging to database working
-3. [ ] Run full cycle during active market hours (09:30-12:00 or 13:00-16:00 HKT)
+3. [ ] Run full cycle during active market hours (09:30-12:00 or 13:00-16:00 HKT) - **Scheduled for Mon Dec 15**
 
 ### Short Term
-1. [ ] Set up cron job for automatic execution
+1. [x] Set up cron job for automatic execution - ✅ **COMPLETED 2025-12-13**
+   - Morning session: 09:30 HKT (01:30 UTC)
+   - Afternoon session: 13:00 HKT (05:00 UTC)
 2. [ ] Configure email alerts (SMTP vars in .env are empty)
-3. [ ] Monitor for 1 week in paper mode
+3. [ ] Monitor for 1 week in paper mode - **Starts Mon Dec 15**
 
 ### Before Live Trading
 1. [ ] Review all paper trading decisions

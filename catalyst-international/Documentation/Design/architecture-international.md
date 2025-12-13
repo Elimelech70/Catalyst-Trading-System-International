@@ -2,15 +2,22 @@
 
 **Name of Application:** Catalyst Trading System International
 **Name of File:** architecture-international.md
-**Version:** 4.1.0
-**Last Updated:** 2025-12-11
+**Version:** 4.2.0
+**Last Updated:** 2025-12-13
 **Target Exchange:** Hong Kong Stock Exchange (HKEX) + US Markets
 **Broker:** Interactive Brokers (IBKR) via ib_async Socket API
 **Architecture:** AI Agent Pattern (Simple Droplet + Claude API + IBGA)
+**Status:** Paper Trading Scheduled (First Run: Mon Dec 15, 09:30 HKT)
 
 ---
 
 ## REVISION HISTORY
+
+**v4.2.0 (2025-12-13)** - Cron Scheduling Configured
+- Added cron jobs for automated trading (morning & afternoon sessions)
+- Updated system status to "Paper Trading Scheduled"
+- Added operational schedule documentation
+- First automated run: Monday Dec 15, 2025 at 09:30 HKT
 
 **v4.1.0 (2025-12-11)** - Production Ready Updates
 - Updated IBKRClient to v2.2.0 (delayed data, HK symbol fix, NaN handling)
@@ -49,10 +56,31 @@ Minimal infrastructure with socket-based broker access:
 - **1 small droplet** ($6/month)
 - **1 Python script** (the agent)
 - **1 Docker container** (IBGA for headless IB Gateway)
-- **Cron** (the trigger)
+- **Cron** (the trigger) - **CONFIGURED**
 - **Claude API** (the brain)
 - **IBKR Socket API** (the broker via ib_async)
 - **PostgreSQL** (own DO Managed DB)
+
+### 1.2 Operational Schedule
+
+| Session | HK Time | UTC (Server) | Cron Expression |
+|---------|---------|--------------|-----------------|
+| Morning | 09:30 HKT | 01:30 UTC | `30 1 * * 1-5` |
+| Afternoon | 13:00 HKT | 05:00 UTC | `0 5 * * 1-5` |
+
+**Cron Jobs (configured 2025-12-13):**
+```cron
+# Morning session start (09:30 HKT = 01:30 UTC)
+30 1 * * 1-5 cd /root/Catalyst-Trading-System-International/catalyst-international && ./venv/bin/python3 agent.py >> logs/cron.log 2>&1
+
+# Afternoon session start (13:00 HKT = 05:00 UTC)
+0 5 * * 1-5 cd /root/Catalyst-Trading-System-International/catalyst-international && ./venv/bin/python3 agent.py >> logs/cron.log 2>&1
+```
+
+**HK Market Hours:**
+- Morning: 09:30 - 12:00 HKT
+- Lunch Break: 12:00 - 13:00 HKT (no trading)
+- Afternoon: 13:00 - 16:00 HKT
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -90,7 +118,7 @@ Minimal infrastructure with socket-based broker access:
                     └─────────────────┘
 ```
 
-### 1.2 Why IBGA + Socket API?
+### 1.3 Why IBGA + Socket API?
 
 | Aspect | IBeam Web API | IBGA Socket API |
 |--------|---------------|-----------------|
@@ -102,7 +130,7 @@ Minimal infrastructure with socket-based broker access:
 | **Order Status** | Polling | Real-time callbacks |
 | **Complexity** | Higher | Lower |
 
-### 1.3 The Agent Loop
+### 1.4 The Agent Loop
 
 ```
 CRON triggers at market hour
@@ -505,7 +533,7 @@ http://209.38.87.27:5800
 
 ---
 
-**Document Version:** 4.1.0
+**Document Version:** 4.2.0
 **Architecture:** Simple Droplet + Claude API + IBGA Socket API
 **Monthly Cost:** ~$36-66
-**Status:** Paper Trading Active
+**Status:** Paper Trading Scheduled (First Run: Mon Dec 15, 09:30 HKT)

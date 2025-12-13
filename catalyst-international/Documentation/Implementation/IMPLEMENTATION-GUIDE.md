@@ -2,13 +2,19 @@
 
 **Name of Application:** Catalyst Trading System
 **Name of File:** IMPLEMENTATION-GUIDE.md
-**Version:** 1.1.0
-**Last Updated:** 2025-12-10
+**Version:** 1.2.0
+**Last Updated:** 2025-12-13
 **Purpose:** Step-by-step implementation guide for Claude Code to build the autonomous trading agent
 
 ---
 
 ## REVISION HISTORY
+
+**v1.2.0 (2025-12-13)** - Cron Scheduling Complete
+- Added cron configuration status (COMPLETE)
+- Updated broker reference to v2.2.0
+- Updated checklist with completed deployment items
+- First automated run scheduled for Mon Dec 15, 09:30 HKT
 
 **v1.1.0 (2025-12-10)** - Updated for IBGA Integration
 - Updated broker section to reflect IBGA (not IBeam) integration
@@ -1457,7 +1463,7 @@ Purpose: Evaluate market conditions and generate stimuli
 
 **STATUS: ✅ IMPLEMENTED**
 
-The execution engine is implemented in `brokers/ibkr.py` v2.1.0 with the following features:
+The execution engine is implemented in `brokers/ibkr.py` v2.2.0 with the following features:
 - Multi-exchange support (HKEX + US)
 - Auto-detect exchange based on symbol format
 - HKEX tick size rounding (11 tiers)
@@ -1663,19 +1669,20 @@ docker-compose logs agent | head -50
 - [ ] config/settings.py
 - [ ] sources/market_data.py
 - [ ] tools/*.py
-- [x] brokers/ibkr.py (v2.1.0 - COMPLETE, tested 2025-12-10)
+- [x] brokers/ibkr.py (v2.2.0 - COMPLETE, tested 2025-12-11)
 
 ### Phase 5: Testing
 - [ ] Test database connection
-- [ ] Test Claude API
+- [x] Test Claude API (COMPLETE - HTTP 200 OK verified 2025-12-11)
 - [x] Test IBKR connection (COMPLETE - Paper trading verified 2025-12-10)
-- [ ] End-to-end test
+- [x] End-to-end test (COMPLETE - Full agent cycle with scan 2025-12-11)
 
 ### Phase 6: Deployment
-- [ ] Build Docker image
-- [ ] Configure .env
-- [ ] Start services
-- [ ] Validate running
+- [ ] Build Docker image (Using IBGA container instead)
+- [x] Configure .env (COMPLETE)
+- [x] Start services (IBGA running, agent via cron)
+- [x] Configure cron schedule (COMPLETE 2025-12-13)
+- [ ] Validate running (First run Mon Dec 15, 09:30 HKT)
 
 ---
 
