@@ -1,0 +1,6 @@
+# IB Gateway Configuration
+listenPort: 5000
+listenSsl: true
+svcEnvironment: v1
+svcTimeout: 60000
+authDelay: 3000

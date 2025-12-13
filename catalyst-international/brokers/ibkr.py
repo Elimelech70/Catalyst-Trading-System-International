@@ -1,11 +1,28 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: ibkr.py
-Version: 1.0.0
-Last Updated: 2025-12-06
-Purpose: Interactive Brokers client for HKEX trading
+Version: 2.2.0
+Last Updated: 2025-12-11
+Purpose: Interactive Brokers client for HKEX and US trading
 
 REVISION HISTORY:
+v2.2.0 (2025-12-11) - Delayed market data + symbol fix
+- Added reqMarketDataType(3) to enable delayed data (no subscription needed)
+- Fixed HK symbol format: strip leading zeros (0700 -> 700)
+- IBKR rejects symbols like "0700", requires "700"
+
+v2.1.0 (2025-12-10) - Multi-exchange support
+- Added _create_contract() with auto-detect exchange
+- Supports HKEX (SEHK) and US (SMART) stocks
+- Auto-detects exchange based on symbol format
+- Numeric symbols -> HKEX, alphabetic -> US
+
+v2.0.0 (2025-12-10) - Migrated to ib_async
+- Switched from ib_insync to ib_async (maintained fork)
+- Uses IBGA Docker for headless IB Gateway with IB Key 2FA
+- Default port 4000 for IBGA connection
+- Added async support with connectAsync
+
 v1.0.0 (2025-12-06) - Initial implementation
 - IBKR TWS/Gateway connection
 - Order execution with bracket orders
@@ -15,7 +32,9 @@ v1.0.0 (2025-12-06) - Initial implementation
 Description:
 This module provides connectivity to Interactive Brokers for trading
 on the Hong Kong Stock Exchange (HKEX). It handles connection management,
-order submission, and portfolio queries using the ib_insync library.
+order submission, and portfolio queries using the ib_async library.
+
+Connects to IB Gateway running in IBGA Docker container on port 4001.
 """
 
 import logging
@@ -25,7 +44,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ib_insync import IB, Contract, LimitOrder, MarketOrder, Order, Stock, Trade
+from ib_async import IB, Contract, LimitOrder, MarketOrder, Order, Stock, Trade
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +97,8 @@ class IBKRClient:
             timeout: Connection timeout in seconds
         """
         self.host = host or os.environ.get("IBKR_HOST", "127.0.0.1")
-        self.port = port or int(os.environ.get("IBKR_PORT", "7497"))
+        # Default to 4000 (IBGA port) instead of 7497 (old TWS port)
+        self.port = port or int(os.environ.get("IBKR_PORT", "4000"))
         self.client_id = client_id or int(os.environ.get("IBKR_CLIENT_ID", "1"))
         self.timeout = timeout
 
@@ -102,6 +122,12 @@ class IBKRClient:
                 timeout=self.timeout,
             )
             self._connected = True
+
+            # Enable delayed market data (15-min delay, no subscription required)
+            # Type 3 = Delayed data, Type 4 = Delayed frozen
+            self.ib.reqMarketDataType(3)
+            logger.info("Enabled delayed market data (15-min delay)")
+
             logger.info(
                 f"Connected to IBKR at {self.host}:{self.port} (client {self.client_id})"
             )
@@ -129,8 +155,38 @@ class IBKRClient:
             if not self.connect():
                 raise ConnectionError("Cannot connect to IBKR")
 
+    def _create_contract(self, symbol: str, exchange: str = None) -> Contract:
+        """Create a stock contract.
+
+        Args:
+            symbol: Stock code (e.g., '0700' or '700' for HKEX, 'AAPL' for US)
+            exchange: Exchange (SEHK for HKEX, SMART for US). Auto-detects if None.
+
+        Returns:
+            IB Contract object
+        """
+        # Auto-detect exchange based on symbol format
+        if exchange is None:
+            # HKEX symbols are numeric (e.g., 0700, 9988)
+            if symbol.isdigit() or (len(symbol) <= 5 and symbol.replace('0', '').isdigit()):
+                exchange = "SEHK"
+            else:
+                # US stocks use SMART routing
+                exchange = "SMART"
+
+        if exchange == "SEHK":
+            # HKEX symbols - IBKR requires NO leading zeros
+            # Convert "0700" -> "700", "0005" -> "5"
+            symbol = symbol.lstrip('0') or '0'  # Keep at least one '0' for symbol "0000"
+            contract = Stock(symbol, "SEHK", "HKD")
+        else:
+            # US stocks
+            contract = Stock(symbol, "SMART", "USD")
+
+        return contract
+
     def _create_hkex_contract(self, symbol: str) -> Contract:
-        """Create an HKEX stock contract.
+        """Create an HKEX stock contract (legacy method).
 
         Args:
             symbol: Stock code (e.g., '0700')
@@ -138,12 +194,7 @@ class IBKRClient:
         Returns:
             IB Contract object
         """
-        # HKEX symbols in IBKR format
-        # Pad with leading zeros if needed
-        symbol = symbol.zfill(4)
-
-        contract = Stock(symbol, "SEHK", "HKD")
-        return contract
+        return self._create_contract(symbol, "SEHK")
 
     # =========================================================================
     # Quote and Market Data
@@ -160,7 +211,7 @@ class IBKRClient:
         """
         self._ensure_connected()
 
-        contract = self._create_hkex_contract(symbol)
+        contract = self._create_contract(symbol)
 
         # Request market data
         self.ib.qualifyContracts(contract)
@@ -169,19 +220,30 @@ class IBKRClient:
         # Wait for data
         self.ib.sleep(1)
 
+        # Helper to safely convert to float, handling NaN
+        def safe_float(val, default=0.0):
+            import math
+            if val is None:
+                return default
+            try:
+                f = float(val)
+                return default if math.isnan(f) else f
+            except (ValueError, TypeError):
+                return default
+
         # Build quote response
         quote = {
             "symbol": symbol,
             "name": contract.localSymbol or symbol,
-            "last": ticker.last if ticker.last else ticker.close,
-            "bid": ticker.bid if ticker.bid else 0,
-            "ask": ticker.ask if ticker.ask else 0,
-            "volume": int(ticker.volume) if ticker.volume else 0,
+            "last": safe_float(ticker.last) or safe_float(ticker.close),
+            "bid": safe_float(ticker.bid),
+            "ask": safe_float(ticker.ask),
+            "volume": int(safe_float(ticker.volume)),
             "avg_volume": 0,  # Would need historical data
-            "high": ticker.high if ticker.high else 0,
-            "low": ticker.low if ticker.low else 0,
-            "open": ticker.open if ticker.open else 0,
-            "prev_close": ticker.close if ticker.close else 0,
+            "high": safe_float(ticker.high),
+            "low": safe_float(ticker.low),
+            "open": safe_float(ticker.open),
+            "prev_close": safe_float(ticker.close),
             "change": 0,
             "change_pct": 0,
             "market_cap": 0,
@@ -212,7 +274,7 @@ class IBKRClient:
         """
         self._ensure_connected()
 
-        contract = self._create_hkex_contract(symbol)
+        contract = self._create_contract(symbol)
         self.ib.qualifyContracts(contract)
 
         bars = self.ib.reqHistoricalData(
@@ -269,7 +331,7 @@ class IBKRClient:
         """
         self._ensure_connected()
 
-        contract = self._create_hkex_contract(symbol)
+        contract = self._create_contract(symbol)
         self.ib.qualifyContracts(contract)
 
         # Normalize side
@@ -504,12 +566,25 @@ class IBKRClient:
         # Get account values
         account_values = self.ib.accountValues()
 
-        # Extract key metrics
+        # Extract key metrics - check BASE currency first, then HKD, then any
         cash = 0
         equity = 0
         unrealized_pnl = 0
         realized_pnl = 0
 
+        # First pass: look for BASE currency (account default)
+        for av in account_values:
+            if av.currency == "BASE":
+                if av.tag == "CashBalance":
+                    cash = float(av.value)
+                elif av.tag == "NetLiquidation":
+                    equity = float(av.value)
+                elif av.tag == "UnrealizedPnL":
+                    unrealized_pnl = float(av.value)
+                elif av.tag == "RealizedPnL":
+                    realized_pnl = float(av.value)
+
+        # Second pass: override with HKD if trading HK stocks
         for av in account_values:
             if av.currency == "HKD":
                 if av.tag == "CashBalance":
