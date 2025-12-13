@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 
 import structlog
 
-from ib_insync import IB, Contract, LimitOrder, MarketOrder, Order, Stock
+from ib_async import IB, Contract, LimitOrder, MarketOrder, Order, Stock
 
 logger = structlog.get_logger()
 
