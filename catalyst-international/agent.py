@@ -1,11 +1,17 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: agent.py
-Version: 1.2.0
-Last Updated: 2025-12-11
+Version: 1.3.0
+Last Updated: 2025-12-15
 Purpose: Main AI Agent loop that uses Claude to make trading decisions
 
 REVISION HISTORY:
+v1.3.0 (2025-12-15) - Added pre-flight IBGA verification
+- Agent now checks IBGA status before running
+- Requires fresh status file (< 10 minutes old)
+- Aborts with alert if IBGA not authenticated
+- Added --skip-preflight flag for testing
+
 v1.2.0 (2025-12-11) - Fixed model name
 - Corrected fallback model from claude-sonnet-4-5 to claude-sonnet-4
 
@@ -53,6 +59,7 @@ load_dotenv()
 from alerts import create_alert_callback, get_alert_sender
 from brokers.ibkr import get_ibkr_client, init_ibkr_client
 from data.database import get_database, init_database
+from preflight import run_preflight_checks, refresh_ibga_status
 from safety import get_safety_validator
 from tool_executor import create_tool_executor
 from tools import TOOLS
@@ -438,6 +445,16 @@ def main():
         action="store_true",
         help="Run even if market is closed",
     )
+    parser.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="Skip IBGA pre-flight checks (for testing only)",
+    )
+    parser.add_argument(
+        "--refresh-status",
+        action="store_true",
+        help="Refresh IBGA status before checking",
+    )
     args = parser.parse_args()
 
     # Create logs directory
@@ -446,6 +463,35 @@ def main():
     logger.info("=" * 60)
     logger.info("Catalyst Trading Agent - HKEX")
     logger.info("=" * 60)
+
+    # =========================================================================
+    # PRE-FLIGHT CHECKS - Verify IBGA is ready before proceeding
+    # =========================================================================
+    if not args.skip_preflight:
+        # Optionally refresh status first
+        if args.refresh_status:
+            logger.info("Refreshing IBGA status...")
+            refresh_ok, refresh_msg = refresh_ibga_status()
+            if not refresh_ok:
+                logger.warning(f"Status refresh failed: {refresh_msg}")
+            else:
+                logger.info(f"Status refresh: {refresh_msg}")
+
+        # Run pre-flight checks
+        preflight_ok, preflight_msg = run_preflight_checks(skip_market_hours=args.force)
+
+        if not preflight_ok:
+            logger.error("=" * 60)
+            logger.error("PRE-FLIGHT FAILED - Agent cannot start")
+            logger.error(f"Reason: {preflight_msg}")
+            logger.error("=" * 60)
+            logger.error("To fix: Run 'python3 scripts/ibga_status_checker.py' or check IBGA")
+            logger.error("To bypass (testing only): Use --skip-preflight flag")
+            sys.exit(1)
+
+        logger.info("Pre-flight checks passed")
+    else:
+        logger.warning("PRE-FLIGHT CHECKS SKIPPED (--skip-preflight flag)")
 
     # Initialize agent
     agent = TradingAgent(
