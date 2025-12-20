@@ -190,9 +190,9 @@ Use this to check available capital and monitor positions.""",
     },
     {
         "name": "execute_trade",
-        "description": """Execute trade via IBKR. Only call after check_risk approves.
+        "description": """Execute trade via broker. Only call after check_risk approves.
 
-Submits order to Interactive Brokers with bracket orders for stop loss
+Submits order to broker with stop loss and take profit levels
 and take profit. Returns order_id, status, filled_price, filled_quantity.
 
 IMPORTANT: Always call check_risk first. Include a clear reason for audit.""",

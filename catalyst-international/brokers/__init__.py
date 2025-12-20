@@ -2,9 +2,9 @@
 Broker integrations for the Catalyst Trading Agent.
 
 This package provides broker connectivity for:
-- Interactive Brokers (IBKR) for HKEX trading
+- Moomoo/Futu for HKEX trading via OpenD gateway
 """
 
-from brokers.ibkr import IBKRClient, get_ibkr_client, init_ibkr_client
+from brokers.futu import FutuClient, get_futu_client, init_futu_client
 
-__all__ = ["IBKRClient", "get_ibkr_client", "init_ibkr_client"]
+__all__ = ["FutuClient", "get_futu_client", "init_futu_client"]

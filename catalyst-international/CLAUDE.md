@@ -2,13 +2,23 @@
 
 **Name of Application**: Catalyst Trading System
 **Name of file**: CLAUDE.md
-**Version**: 2.2.0
-**Last Updated**: 2025-12-13
+**Version**: 3.0.0
+**Last Updated**: 2025-12-20
 **Purpose**: Complete operational guidelines for Claude Code on production systems
 
 ---
 
 ## REVISION HISTORY
+
+**v3.0.0 (2025-12-20)** - BROKER MIGRATION: IBKR → MOOMOO/FUTU
+- **MAJOR**: Migrated from Interactive Brokers to Moomoo/Futu OpenD
+- Replaced IBGA Docker container with OpenD native gateway
+- Added `brokers/futu.py` client implementation
+- Removed IBKR authentication complexity (no more IB Key 2FA)
+- Updated International System Architecture section
+- Updated NEVER/ALWAYS rules for Futu
+- Added OpenD setup and configuration details
+- HKEX tick size rules remain (same exchange)
 
 **v2.2.0 (2025-12-13)** - IBKR-SPECIFIC LESSONS LEARNED
 - Added Lessons 11-14 for IBKR/HKEX trading
@@ -197,11 +207,12 @@ For the International system, instead of encoding "if news positive AND volume >
 **Note**: Redis (6379) runs as infrastructure, not counted as a service.
 
 ### Infrastructure
-- **Droplet**: Single DigitalOcean droplet
+- **Droplet**: Single DigitalOcean droplet (IP: 209.38.87.27)
 - **Database**: DigitalOcean Managed PostgreSQL (3NF normalized schema)
 - **Cache**: Redis (Docker container)
-- **Location**: Perth timezone (AWST) → US markets (EST)
-- **Broker**: Alpaca (US), Interactive Brokers (International planned)
+- **Location**: Perth timezone (AWST) → US markets (EST), HK markets (HKT)
+- **Broker US**: Alpaca
+- **Broker International**: Moomoo/Futu via OpenD gateway (migrated from IBKR Dec 2025)
 
 ---
 
@@ -416,16 +427,16 @@ assets = alpaca_client.get_all_assets(
 
 ---
 
-## 🌏 IBKR-SPECIFIC LESSONS (International System)
+## 🌏 HKEX TRADING LESSONS (International System - Moomoo/Futu)
 
-These lessons are specific to trading HKEX via Interactive Brokers:
+These lessons are specific to trading HKEX via Moomoo/Futu OpenD:
 
 ### Lesson 11: HKEX Tick Size Compliance
 **Problem**: HKEX has 11-tier tick size rules - incorrect prices rejected
 **Solution**: Always round prices to valid tick size before submission
 
 ```python
-# brokers/ibkr.py:440-479 - IMPLEMENTED
+# brokers/futu.py - IMPLEMENTED
 def _round_to_tick(self, price: float) -> float:
     """HKEX tick sizes vary by price tier"""
     if price < 0.25:
@@ -442,57 +453,79 @@ def _round_to_tick(self, price: float) -> float:
     return round(round(price / tick) * tick, 3)
 ```
 
-**Status**: ✅ Implemented in `brokers/ibkr.py`
+**Status**: ✅ Implemented in `brokers/futu.py`
 
-### Lesson 12: Delayed Data Trading Rules ⚠️
-**Problem**: Using 15-minute delayed market data (no real-time subscription)
-**Impact**: Entry prices may drift, stop losses may trigger late, signals may be stale
+### Lesson 12: Moomoo/Futu Real-Time Data
+**Benefit**: Moomoo provides real-time HKEX data (unlike IBKR delayed data)
+**Impact**: Can use tighter stops and more responsive trading
 
-**Rules for Delayed Data Trading:**
+**Rules for Real-Time Trading:**
 ```
-✅ ALWAYS use LIMIT orders, not market orders
-✅ Set stop losses 1-2% wider than real-time would require
-✅ Prefer less volatile stocks (avoid momentum plays)
-✅ Check volume - high volume = more reliable delayed quotes
-✅ Avoid trading first 30 minutes after market open
+✅ Can use both MARKET and LIMIT orders
+✅ Standard stop loss rules apply (2-3%)
+✅ Volume-based signals are more reliable
+✅ Can trade near market open
 
-❌ NEVER chase fast-moving momentum stocks
-❌ NEVER use tight stops (< 3%) with delayed data
-❌ NEVER trade on news that's less than 30 minutes old
+⚠️ Still prefer LIMIT orders for better fills
+⚠️ Monitor spread before trading illiquid stocks
 ```
 
-**Status**: ⚠️ Risk acknowledged - must follow rules above
+**Status**: ✅ Real-time data included with Moomoo
 
-### Lesson 13: HK Symbol Format
-**Problem**: IBKR rejects "0700", requires "700" (no leading zeros)
-**Solution**: Strip leading zeros from all HK symbols
+### Lesson 13: HK Symbol Format (Futu)
+**Format**: Futu uses "HK.00700" format internally
+**Solution**: Use `_format_hk_symbol()` to convert user input
 
 ```python
-# brokers/ibkr.py:180 - IMPLEMENTED
-symbol = symbol.lstrip('0') or '0'  # "0700" → "700", "0005" → "5"
+# brokers/futu.py - IMPLEMENTED
+def _format_hk_symbol(self, symbol: str) -> str:
+    """Format symbol for HKEX (e.g., '700' -> 'HK.00700')"""
+    num = symbol.lstrip('0') or '0'
+    return f"HK.{num.zfill(5)}"
+
+def _parse_hk_symbol(self, futu_symbol: str) -> str:
+    """Parse back to simple code (e.g., 'HK.00700' -> '700')"""
+    return futu_symbol.replace("HK.", "").lstrip("0") or "0"
 ```
 
-**Status**: ✅ Implemented in `brokers/ibkr.py`
+**Status**: ✅ Implemented in `brokers/futu.py`
 
-### Lesson 14: Dollar-Based Position Sizing (IBKR)
+### Lesson 14: Dollar-Based Position Sizing
 **Problem**: Share-based sizing creates uneven exposure (US system had 10x variance)
 **Solution**: Calculate target dollar value first, then convert to shares
 
 ```python
 # Calculate dollar-based position size
-portfolio_value = get_portfolio()["equity"]
+portfolio = client.get_portfolio()
+portfolio_value = portfolio["total_value"]
 target_pct = 0.18  # 18% of portfolio per position
 target_value = portfolio_value * target_pct
 
 # Convert to shares, round to lot size (100 for HKEX)
-current_price = get_quote(symbol)["last"]
+quote = client.get_quote(symbol)
+current_price = quote["last_price"]
 quantity = int(target_value / current_price / 100) * 100
 
-# Example: $1,000,000 portfolio, 18% target = $180,000
+# Example: HKD 1,000,000 portfolio, 18% target = HKD 180,000
 # Stock at HKD 380 → 180000 / 380 / 100 * 100 = 400 shares
 ```
 
 **Status**: ⚠️ Agent must follow this pattern - not enforced in code
+
+### Lesson 15: Futu No Native Bracket Orders ⚠️
+**Problem**: Futu doesn't support parent-child linked orders like IBKR
+**Solution**: Use conditional orders OR agent-managed stop monitoring
+
+```python
+# Option A: Conditional orders (if supported)
+# Option B: Agent monitors and issues sell when SL/TP hit
+
+# Current implementation logs SL/TP for agent to manage
+if stop_loss or take_profit:
+    logger.info(f"SL={stop_loss}, TP={take_profit} - agent must monitor")
+```
+
+**Status**: ⚠️ Requires agent-managed stops or conditional order implementation
 
 ---
 
@@ -703,13 +736,13 @@ scp -i ~/.ssh/id_rsa root@<DROPLET_IP>:/root/catalyst-trading-mcp/services/*/*.p
 13. **NEVER** start services without verifying helper functions exist
 14. **NEVER** hardcode stock lists - use dynamic discovery
 
-### IBKR-Specific Rules (International)
-15. **NEVER** use market orders with delayed data - use limit orders
-16. **NEVER** chase momentum stocks with 15-min delayed data
-17. **NEVER** use tight stops (< 3%) with delayed data
-18. **NEVER** trade on news less than 30 minutes old (delayed data drift)
-19. **NEVER** submit HK symbols with leading zeros (use "700" not "0700")
-20. **NEVER** size positions by shares alone - use dollar-based sizing
+### Futu/HKEX-Specific Rules (International)
+15. **NEVER** submit raw HK symbols - use `_format_hk_symbol()` for Futu format
+16. **NEVER** size positions by shares alone - use dollar-based sizing
+17. **NEVER** ignore lot size - HKEX requires multiples of 100 shares
+18. **NEVER** assume bracket orders work - Futu doesn't support them natively
+19. **NEVER** trade without checking `is_connected()` first
+20. **NEVER** forget to call `disconnect()` when done
 
 ---
 
@@ -733,15 +766,15 @@ scp -i ~/.ssh/id_rsa root@<DROPLET_IP>:/root/catalyst-trading-mcp/services/*/*.p
 13. **ALWAYS** round prices to 2 decimal places before Alpaca submission
 14. **ALWAYS** use Alpaca Assets API for dynamic stock universe
 
-### IBKR-Specific Rules (International)
-15. **ALWAYS** use limit orders with delayed market data
+### Futu/HKEX-Specific Rules (International)
+15. **ALWAYS** call `client.connect()` before any trading operations
 16. **ALWAYS** round prices to valid HKEX tick size (`_round_to_tick()`)
-17. **ALWAYS** strip leading zeros from HK symbols before submission
+17. **ALWAYS** use `_format_hk_symbol()` for Futu's "HK.00700" format
 18. **ALWAYS** calculate position size in dollars first, then convert to shares
 19. **ALWAYS** use lot size of 100 for HKEX stocks (round quantity to 100s)
-20. **ALWAYS** set wider stops (3-5%) to account for 15-min data delay
-21. **ALWAYS** wait 30 minutes after market open before trading (delayed data settles)
-22. **ALWAYS** check `get_portfolio()` for current positions before new trades
+20. **ALWAYS** check `get_portfolio()` for current positions before new trades
+21. **ALWAYS** implement agent-managed stops (Futu lacks bracket orders)
+22. **ALWAYS** call `client.disconnect()` on exit or error
 
 ---
 
@@ -1245,24 +1278,55 @@ reasoning: 'FDA breakthrough designation + institutional volume'"
 
 ---
 
-## 🌏 International System Architecture (HKEX via IBKR)
+## 🌏 International System Architecture (HKEX via Moomoo/Futu)
 
 ### Key Architecture Differences
 
 | Aspect | US (Microservices) | International (Agent) |
 |--------|-------------------|----------------------|
-| **Components** | 8 Docker containers | 1 Python script |
+| **Components** | 8 Docker containers | 1 Python script + OpenD |
 | **Files** | 50+ | ~10 |
 | **Lines of code** | 5000+ | ~900 |
 | **Monthly cost** | $24+ droplet | $6 droplet |
 | **Decision making** | Hardcoded workflow | Claude decides dynamically |
-| **Broker** | Alpaca | Interactive Brokers |
+| **Broker** | Alpaca | Moomoo/Futu via OpenD |
 | **Debugging** | 8 service logs | 1 log file + reasoning |
+
+### Why Moomoo/Futu (Migrated from IBKR Dec 2025)
+
+| Aspect | IBKR (Old) | Moomoo/Futu (New) |
+|--------|------------|-------------------|
+| **Gateway** | IBGA Docker + Java + VNC | OpenD native binary |
+| **Authentication** | IB Key 2FA (constant failures) | Password + unlock |
+| **Market Data** | 15-min delayed (no subscription) | Real-time included |
+| **Container deps** | Docker, Java 17, JavaFX | None (native) |
+| **Debug method** | VNC into container | Simple log files |
+| **Reconnection** | Manual re-auth often | Auto-reconnect |
 
 ### Agent Loop Pattern
 ```
-CRON triggers → Build Context → Call Claude API → Claude requests tool 
+CRON triggers → Build Context → Call Claude API → Claude requests tool
     → Execute tool → Return result → Claude continues → Loop until done
+```
+
+### OpenD Gateway Setup
+```
+/root/opend/
+├── docker-compose.yml    # OpenD container config
+├── .env                  # FUTU_USER, FUTU_PWD, FUTU_TRADE_PWD
+├── logs/                 # OpenD logs
+└── test_connection.py    # Connection verification script
+```
+
+**Start OpenD:**
+```bash
+cd /root/opend && docker compose up -d
+```
+
+**Test connection:**
+```bash
+source /root/Catalyst-Trading-System-International/catalyst-international/venv/bin/activate
+python3 /root/opend/test_connection.py
 ```
 
 ### Why Agent for International
@@ -1272,25 +1336,9 @@ CRON triggers → Build Context → Call Claude API → Claude requests tool
 - Simpler debugging (1 log file + decision reasoning)
 - Lower operational cost ($6 vs $24+)
 - Every decision logged with reasoning (ML training data)
+- Real-time market data (no delayed data issues)
 
-### File Structure Comparison
-
-**US System (Microservices):**
-```
-catalyst-trading-mcp/
-├── services/
-│   ├── scanner/scanner-service.py       # 500+ lines
-│   ├── pattern/pattern-service.py       # 400+ lines
-│   ├── technical/technical-service.py   # 600+ lines
-│   ├── risk-manager/risk-manager-service.py  # 800+ lines
-│   ├── trading/trading-service.py       # 500+ lines
-│   ├── workflow/workflow-service.py     # 400+ lines
-│   ├── news/news-service.py             # 300+ lines
-│   └── reporting/reporting-service.py   # 300+ lines
-├── docker-compose.yml
-└── 40+ other files...
-Total: 5000+ lines, 50+ files
-```
+### File Structure
 
 **International System (Agent):**
 ```
@@ -1299,10 +1347,19 @@ catalyst-international/
 ├── tools.py              # ~100 lines (definitions)
 ├── tool_executor.py      # ~150 lines (routing)
 ├── safety.py             # ~100 lines (validation)
-├── brokers/ibkr.py       # ~200 lines
+├── brokers/
+│   └── futu.py           # ~500 lines (Moomoo/Futu client)
 ├── data/market.py        # ~150 lines
 └── config/settings.yaml  # ~50 lines
-Total: ~900 lines, ~10 files
+Total: ~1000 lines, ~10 files
+```
+
+**OpenD Gateway (separate directory):**
+```
+/root/opend/
+├── docker-compose.yml
+├── .env
+└── test_connection.py
 ```
 
 ---
