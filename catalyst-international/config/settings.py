@@ -85,23 +85,19 @@ class Settings(BaseSettings):
         return f"postgresql://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}"
 
     # =========================================================================
-    # Interactive Brokers
+    # Moomoo/Futu Broker
     # =========================================================================
-    ibkr_host: str = Field(
+    futu_host: str = Field(
         default="127.0.0.1",
-        description="IBKR TWS/Gateway host",
+        description="OpenD gateway host",
     )
-    ibkr_port: int = Field(
-        default=7497,
-        description="IBKR port (7497=paper, 7496=live)",
+    futu_port: int = Field(
+        default=11111,
+        description="OpenD API port",
     )
-    ibkr_client_id: int = Field(
-        default=1,
-        description="IBKR client ID",
-    )
-    ibkr_timeout: int = Field(
-        default=30,
-        description="IBKR connection timeout seconds",
+    futu_trade_pwd: Optional[str] = Field(
+        default=None,
+        description="Futu trade unlock password",
     )
 
     # =========================================================================
