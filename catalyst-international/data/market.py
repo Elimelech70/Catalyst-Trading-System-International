@@ -2,10 +2,14 @@
 Market data and technical analysis for the Catalyst Trading Agent.
 
 This module provides:
-- Real-time quotes from IBKR
+- Real-time quotes from Moomoo/Futu
 - Historical price data
 - Technical indicators (RSI, MACD, Moving Averages, etc.)
 - Market scanning functionality
+
+v2.0.0 (2025-12-20) - Migrated to Moomoo/Futu
+- Replaced IBKR with Futu broker client
+- Real-time data now included (no more delayed data)
 
 v1.1.0 (2025-12-11) - NaN handling for delayed data
 - Added safe_float() helper to handle NaN values from delayed market data
@@ -106,20 +110,20 @@ class Technicals:
 
 
 class MarketData:
-    """Market data provider using IBKR as data source."""
+    """Market data provider using Moomoo/Futu as data source."""
 
-    def __init__(self, ibkr_client: Any = None):
+    def __init__(self, broker_client: Any = None):
         """Initialize market data provider.
 
         Args:
-            ibkr_client: IBKR client instance for data fetching
+            broker_client: Broker client instance for data fetching (FutuClient)
         """
-        self.ibkr = ibkr_client
+        self.broker = broker_client
         self._price_cache: dict[str, pd.DataFrame] = {}
 
-    def set_ibkr_client(self, client: Any):
-        """Set the IBKR client."""
-        self.ibkr = client
+    def set_broker_client(self, client: Any):
+        """Set the broker client."""
+        self.broker = client
 
     def get_quote(self, symbol: str) -> dict:
         """Get current quote for a symbol.
@@ -130,11 +134,11 @@ class MarketData:
         Returns:
             Quote data as dictionary
         """
-        if not self.ibkr:
-            raise RuntimeError("IBKR client not initialized")
+        if not self.broker:
+            raise RuntimeError("Broker client not initialized")
 
         # Fetch from IBKR
-        data = self.ibkr.get_quote(symbol)
+        data = self.broker.get_quote(symbol)
 
         # Calculate volume ratio (handle NaN from delayed data)
         avg_volume = safe_int(data.get("avg_volume"), 1)
@@ -174,8 +178,8 @@ class MarketData:
         Returns:
             DataFrame with OHLCV data
         """
-        if not self.ibkr:
-            raise RuntimeError("IBKR client not initialized")
+        if not self.broker:
+            raise RuntimeError("Broker client not initialized")
 
         # Map timeframe to IBKR format
         tf_map = {
@@ -192,11 +196,11 @@ class MarketData:
             "1d": f"{bars + 1} D",
         }
 
-        ibkr_tf = tf_map.get(timeframe, "15 mins")
+        bar_size = tf_map.get(timeframe, "15 mins")
         duration = duration_map.get(timeframe, "5 D")
 
-        data = self.ibkr.get_historical_data(
-            symbol=symbol, duration=duration, bar_size=ibkr_tf
+        data = self.broker.get_historical_data(
+            symbol=symbol, duration=duration, bar_size=bar_size
         )
 
         df = pd.DataFrame(data)
@@ -320,8 +324,8 @@ class MarketData:
         Returns:
             List of candidate stocks sorted by momentum
         """
-        if not self.ibkr:
-            raise RuntimeError("IBKR client not initialized")
+        if not self.broker:
+            raise RuntimeError("Broker client not initialized")
 
         # Get index constituents
         symbols = self._get_index_constituents(index)
@@ -554,11 +558,11 @@ class MarketData:
 _market_data: MarketData | None = None
 
 
-def get_market_data(ibkr_client: Any = None) -> MarketData:
+def get_market_data(broker_client: Any = None) -> MarketData:
     """Get or create market data singleton."""
     global _market_data
     if _market_data is None:
-        _market_data = MarketData(ibkr_client)
-    elif ibkr_client and _market_data.ibkr is None:
-        _market_data.set_ibkr_client(ibkr_client)
+        _market_data = MarketData(broker_client)
+    elif broker_client and _market_data.broker is None:
+        _market_data.set_broker_client(broker_client)
     return _market_data
