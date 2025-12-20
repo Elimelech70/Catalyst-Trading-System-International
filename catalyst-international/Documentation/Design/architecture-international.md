@@ -2,47 +2,41 @@
 
 **Name of Application:** Catalyst Trading System International
 **Name of File:** architecture-international.md
-**Version:** 4.2.0
-**Last Updated:** 2025-12-13
-**Target Exchange:** Hong Kong Stock Exchange (HKEX) + US Markets
-**Broker:** Interactive Brokers (IBKR) via ib_async Socket API
-**Architecture:** AI Agent Pattern (Simple Droplet + Claude API + IBGA)
-**Status:** Paper Trading Scheduled (First Run: Mon Dec 15, 09:30 HKT)
+**Version:** 5.0.0
+**Last Updated:** 2025-12-20
+**Target Exchange:** Hong Kong Stock Exchange (HKEX)
+**Broker:** Moomoo/Futu via OpenD Gateway (migrated from IBKR Dec 2025)
+**Architecture:** AI Agent Pattern (Simple Droplet + Claude API + OpenD)
+**Status:** Broker Migration In Progress
 
 ---
 
 ## REVISION HISTORY
 
+**v5.0.0 (2025-12-20)** - BROKER MIGRATION: IBKR → MOOMOO/FUTU
+- **MAJOR**: Migrated from Interactive Brokers to Moomoo/Futu
+- Replaced IBGA Docker container with OpenD Docker container
+- Added `brokers/futu.py` (FutuClient) - simpler authentication
+- Real-time market data included (no more 15-min delay)
+- No more IB Key 2FA issues
+- OpenD setup at `/root/opend/`
+- IBKR code kept at `brokers/ibkr.py` for reference
+
 **v4.2.0 (2025-12-13)** - Cron Scheduling Configured
 - Added cron jobs for automated trading (morning & afternoon sessions)
 - Updated system status to "Paper Trading Scheduled"
 - Added operational schedule documentation
-- First automated run: Monday Dec 15, 2025 at 09:30 HKT
 
-**v4.1.0 (2025-12-11)** - Production Ready Updates
+**v4.1.0 (2025-12-11)** - Production Ready Updates (IBKR)
 - Updated IBKRClient to v2.2.0 (delayed data, HK symbol fix, NaN handling)
-- Updated agent.py to v1.2.0 (fixed Claude model name)
-- Updated market.py to v1.1.0 (NaN handling helpers)
 - Clarified: Uses own PostgreSQL database (not shared with US)
-- Added delayed market data documentation (15-min delay, free)
-- Updated known limitations section
 
 **v4.0.0 (2025-12-10)** - IBGA Socket API Integration
 - Replaced IBeam Web API with IBGA (heshiming/ibga) Docker container
 - Uses ib_async socket API for broker communication
-- Custom Dockerfile with Zulu JDK 17.0.10 + JavaFX
-- IB Key 2FA support with headless operation
-- Multi-exchange support (HKEX + US stocks)
-- Paper trading tested and verified
 
 **v3.0.0 (2025-12-09)** - IBeam Web API Integration (Deprecated)
-- REST-based broker communication via IBeam
-- Automatic session management
-
 **v2.0.0 (2025-12-03)** - Simplified Architecture
-- Single $6 DigitalOcean droplet
-- Direct Claude API calls
-
 **v1.0.0 (2025-12-03)** - Initial Agent Architecture
 
 ---
@@ -51,24 +45,36 @@
 
 ### 1.1 Current Production Setup
 
-Minimal infrastructure with socket-based broker access:
+Minimal infrastructure with Moomoo/Futu OpenD:
 
-- **1 small droplet** ($6/month)
+- **1 small droplet** ($6/month) - IP: 209.38.87.27
 - **1 Python script** (the agent)
-- **1 Docker container** (IBGA for headless IB Gateway)
-- **Cron** (the trigger) - **CONFIGURED**
+- **1 Docker container** (OpenD for Futu gateway)
+- **Cron** (the trigger)
 - **Claude API** (the brain)
-- **IBKR Socket API** (the broker via ib_async)
+- **Futu OpenAPI** (the broker via futu-api)
 - **PostgreSQL** (own DO Managed DB)
 
-### 1.2 Operational Schedule
+### 1.2 Why Moomoo/Futu (Migrated from IBKR Dec 2025)
+
+| Aspect | IBKR (Old) | Moomoo/Futu (New) |
+|--------|------------|-------------------|
+| **Gateway** | IBGA Docker + Java + VNC | OpenD native binary |
+| **Authentication** | IB Key 2FA (constant failures) | Password + unlock |
+| **Market Data** | 15-min delayed (no subscription) | Real-time included |
+| **Container deps** | Docker, Java 17, JavaFX | Docker only |
+| **Debug method** | VNC into container | Simple log files |
+| **Reconnection** | Manual re-auth often | Auto-reconnect |
+| **API Type** | ib_async socket | futu-api socket |
+
+### 1.3 Operational Schedule
 
 | Session | HK Time | UTC (Server) | Cron Expression |
 |---------|---------|--------------|-----------------|
 | Morning | 09:30 HKT | 01:30 UTC | `30 1 * * 1-5` |
 | Afternoon | 13:00 HKT | 05:00 UTC | `0 5 * * 1-5` |
 
-**Cron Jobs (configured 2025-12-13):**
+**Cron Jobs:**
 ```cron
 # Morning session start (09:30 HKT = 01:30 UTC)
 30 1 * * 1-5 cd /root/Catalyst-Trading-System-International/catalyst-international && ./venv/bin/python3 agent.py >> logs/cron.log 2>&1
@@ -82,30 +88,33 @@ Minimal infrastructure with socket-based broker access:
 - Lunch Break: 12:00 - 13:00 HKT (no trading)
 - Afternoon: 13:00 - 16:00 HKT
 
+### 1.4 Architecture Diagram
+
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                DIGITALOCEAN DROPLET ($6/month)                       │
+│                IP: 209.38.87.27                                      │
 │                                                                      │
 │   ┌──────────┐     ┌──────────────┐     ┌──────────────────┐        │
 │   │   CRON   │────▶│    AGENT     │────▶│      TOOLS       │        │
 │   │          │     │   (Python)   │     │    (Functions)   │        │
 │   │ 9:30 AM  │     │              │     │                  │        │
-│   │ 10:30 AM │     │ Calls Claude │     │ - scan_market()  │        │
-│   │ ...      │     │ Executes     │     │ - get_news()     │        │
-│   │ 3:30 PM  │     │ Tools        │     │ - execute_trade()│        │
-│   └──────────┘     └──────────────┘     │ - check_risk()   │        │
+│   │ 1:00 PM  │     │ Calls Claude │     │ - scan_market()  │        │
+│   │          │     │ Executes     │     │ - get_news()     │        │
+│   └──────────┘     │ Tools        │     │ - execute_trade()│        │
+│                    └──────────────┘     │ - check_risk()   │        │
 │                           │             └────────┬─────────┘        │
 │                           │                      │                  │
 │                           ▼                      ▼                  │
 │                    ┌─────────────┐       ┌─────────────┐            │
-│                    │ Claude API  │       │    IBGA     │            │
+│                    │ Claude API  │       │   OpenD     │            │
 │                    │ (Anthropic) │       │  (Docker)   │            │
 │                    └─────────────┘       └──────┬──────┘            │
 │                                                 │                   │
 │                                                 ▼                   │
 │                                          ┌─────────────┐            │
-│                                          │ IB Gateway  │            │
-│                                          │ (Port 4000) │            │
+│                                          │Futu Gateway │            │
+│                                          │ (Port 11111)│            │
 │                                          └─────────────┘            │
 │                                                                      │
 └──────────────────────────────────────────────────────────────────────┘
@@ -118,19 +127,7 @@ Minimal infrastructure with socket-based broker access:
                     └─────────────────┘
 ```
 
-### 1.3 Why IBGA + Socket API?
-
-| Aspect | IBeam Web API | IBGA Socket API |
-|--------|---------------|-----------------|
-| **Library** | requests (REST) | ib_async (socket) |
-| **Connection** | REST/HTTPS | TCP socket |
-| **Authentication** | IBeam handles | IBGA handles |
-| **Reliability** | Moderate | High (native IB protocol) |
-| **Market Data** | REST polling | Streaming |
-| **Order Status** | Polling | Real-time callbacks |
-| **Complexity** | Higher | Lower |
-
-### 1.4 The Agent Loop
+### 1.5 The Agent Loop
 
 ```
 CRON triggers at market hour
@@ -153,7 +150,7 @@ CRON triggers at market hour
          │
          ▼
 ┌───────────────────┐
-│ 4. Execute Tool   │  ← IBKRClient calls ib_async
+│ 4. Execute Tool   │  ← FutuClient calls OpenD
 └────────┬──────────┘
          │
          ▼
@@ -188,7 +185,7 @@ catalyst-international/
 │
 ├── brokers/
 │   ├── __init__.py
-│   └── ibkr.py                 # IBKR client via ib_async (v2.2.0)
+│   └── futu.py                 # Moomoo/Futu client via OpenD (v1.0.0)
 │
 ├── data/
 │   ├── __init__.py
@@ -201,339 +198,214 @@ catalyst-international/
 │   └── prompts/
 │       └── system.md           # Claude's instructions
 │
-├── ibga/
-│   ├── Dockerfile              # Custom image with Java 17 + JavaFX
-│   ├── docker-compose.yml      # IBGA container config
-│   ├── .env                    # IBKR credentials
-│   ├── run/                    # Persisted gateway data
-│   └── SETUP-STATUS.md         # Current setup status
-│
 ├── scripts/
-│   ├── test_ibga_connection.py # Connection test
 │   └── health_check.sh         # Health monitoring
 │
 ├── logs/                       # Daily log files
 │
 ├── requirements.txt            # Python dependencies
 └── README.md
+
+/root/opend/                    # OpenD gateway (separate directory)
+├── docker-compose.yml          # OpenD container config
+├── .env                        # FUTU_USER, FUTU_PWD, FUTU_TRADE_PWD
+├── logs/                       # OpenD logs
+└── test_connection.py          # Connection verification script
 ```
 
 ---
 
-## 3. IBGA Configuration
+## 3. OpenD Configuration
 
-### 3.1 Custom Dockerfile
-
-```dockerfile
-# ibga/Dockerfile
-# Custom IBGA image with exact Zulu JDK 17.0.10 + JavaFX required by IBGateway 10.41
-FROM heshiming/ibga
-
-USER root
-
-# Install curl and ca-certificates for downloading
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl ca-certificates && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# Download and install Zulu JDK 17.0.10 WITH JavaFX (needed for GUI)
-# Install to /opt/java which won't be overwritten by volume mounts
-RUN mkdir -p /opt/java && \
-    cd /tmp && \
-    curl -L -o zulu17fx.tar.gz "https://cdn.azul.com/zulu/bin/zulu17.48.15-ca-fx-jdk17.0.10-linux_x64.tar.gz" && \
-    tar -xzf zulu17fx.tar.gz && \
-    mv zulu17.48.15-ca-fx-jdk17.0.10-linux_x64 /opt/java/zulu17.0.10-fx && \
-    rm -rf /tmp/zulu17* && \
-    chmod -R 755 /opt/java
-
-# Set INSTALL4J_JAVA_HOME_OVERRIDE to bypass IBGateway's strict version checking
-ENV INSTALL4J_JAVA_HOME_OVERRIDE=/opt/java/zulu17.0.10-fx
-
-USER ibg
-```
-
-### 3.2 Docker Compose
+### 3.1 Docker Compose
 
 ```yaml
-# ibga/docker-compose.yml
+# /root/opend/docker-compose.yml
+version: "3.8"
+
 services:
-  ibga:
-    build: .
-    image: catalyst-ibga-java17
-    container_name: catalyst-ibga
+  opend:
+    image: ghcr.io/manhinhang/futu-opend-docker:ubuntu-stable
+    container_name: catalyst-opend
     restart: unless-stopped
-    environment:
-      - TERM=xterm
-      - INSTALL4J_JAVA_HOME_OVERRIDE=/opt/java/zulu17.0.10-fx
-      - IB_USERNAME=${IB_USERNAME}
-      - IB_PASSWORD=${IB_PASSWORD}
-      - IB_REGION=Asia
-      - IB_TIMEZONE=Asia/Hong_Kong
-      - IB_LOGINTAB=IB API
-      - IB_LOGINTYPE=${IB_LOGINTYPE:-Paper Trading}
-      - IB_LOGOFF=5:00 PM
-      - IB_PREFER_IBKEY=true
-    volumes:
-      - ./run/program:/home/ibg
-      - ./run/settings:/home/ibg_settings
     ports:
-      - "5800:5800"    # VNC for debugging
-      - "4000:4000"    # IB Gateway API
+      - "11111:11111"  # API port
+    environment:
+      - FUTU_USER=${FUTU_USER}
+      - FUTU_PWD=${FUTU_PWD}
+      - FUTU_RSA=
+      - FUTU_TRADE_PWD=${FUTU_TRADE_PWD:-}
+    volumes:
+      - ./logs:/app/logs
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 4000 || exit 1"]
-      interval: 60s
+      test: ["CMD", "nc", "-z", "localhost", "11111"]
+      interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 180s
+      start_period: 60s
 ```
 
-### 3.3 Gateway Settings (Configured via VNC)
+### 3.2 Environment Variables
 
-| Setting | Value |
-|---------|-------|
-| API Socket Port | 9000 (internal) |
-| External Port | 4000 (via socat) |
-| Trusted IPs | 127.0.0.1, 172.19.0.1 |
-| Read-Only API | Disabled |
-| Auto Logoff | 5:00 PM HKT |
-| Auto Restart | Enabled |
+```bash
+# /root/opend/.env
+FUTU_USER=<your_moomoo_account_id>
+FUTU_PWD=<your_password>
+FUTU_TRADE_PWD=<your_trade_unlock_password>
+```
 
 ---
 
-## 4. IBKRClient Implementation
+## 4. FutuClient Implementation
 
-### 4.1 brokers/ibkr.py (v2.2.0)
+### 4.1 brokers/futu.py (v1.0.0)
 
 Key features:
-- Multi-exchange support (HKEX + US)
-- Auto-detect exchange based on symbol format
-- HK symbol normalization (strips leading zeros: 0700 → 700)
-- Delayed market data support (15-min delay, free)
-- NaN handling for market data fields
-- HKEX tick size rounding
-- Bracket orders with stop loss/take profit
+- Simple password-based authentication (no 2FA)
+- Real-time market data included
+- HKEX tick size rounding (`_round_to_tick()`)
+- Symbol format conversion (`_format_hk_symbol()`)
 - Position and order management
-- Multi-currency portfolio support (BASE/HKD/USD)
+- Auto-reconnect support
 
 ```python
-# Key methods in IBKRClient:
+# Key methods in FutuClient:
 
-def _create_contract(self, symbol: str, exchange: str = None) -> Contract:
-    """Auto-detect exchange: numeric = HKEX, alphabetic = US"""
+def connect(self) -> bool:
+    """Connect to OpenD and unlock trading"""
 
-def execute_trade(self, symbol, side, quantity, order_type, limit_price,
-                  stop_loss, take_profit, reason) -> dict:
-    """Execute trade with optional bracket orders"""
+def get_quote(self, symbol: str) -> dict:
+    """Get real-time quote for a symbol"""
 
 def get_portfolio(self) -> dict:
     """Get cash, equity, positions, P&L"""
 
-def get_positions(self) -> list[dict]:
+def get_positions(self) -> list[Position]:
     """Get all open positions"""
 
-def close_position(self, symbol, reason) -> dict:
+def execute_trade(self, symbol, side, quantity, order_type, limit_price,
+                  stop_loss, take_profit, reason) -> OrderResult:
+    """Execute trade"""
+
+def close_position(self, symbol, reason) -> OrderResult:
     """Close a specific position"""
 
-def close_all_positions(self, reason) -> list[dict]:
+def close_all_positions(self, reason) -> list[OrderResult]:
     """Emergency: close all positions"""
+
+def _format_hk_symbol(self, symbol: str) -> str:
+    """Format '700' -> 'HK.00700' for Futu API"""
+
+def _round_to_tick(self, price: float) -> float:
+    """Round to valid HKEX tick size (11 tiers)"""
 ```
 
-### 4.2 Exchange Auto-Detection & Symbol Handling
+### 4.2 Symbol Format Handling
 
 ```python
-# Numeric symbols → HKEX (SEHK), leading zeros stripped
-# Alphabetic symbols → US (SMART)
+# Input formats → Futu format
+client._format_hk_symbol('700')   # → 'HK.00700'
+client._format_hk_symbol('0700')  # → 'HK.00700'
+client._format_hk_symbol('9988')  # → 'HK.09988'
 
-client._create_contract('AAPL')  # → Stock('AAPL', 'SMART', 'USD')
-client._create_contract('0700')  # → Stock('700', 'SEHK', 'HKD')  # Note: 0700 → 700
-client._create_contract('9988')  # → Stock('9988', 'SEHK', 'HKD')
+# Parse back from Futu format
+client._parse_hk_symbol('HK.00700')  # → '700'
 ```
 
-### 4.3 Delayed Market Data
+### 4.3 Key Difference: No Bracket Orders
 
-```python
-# Enable delayed data after connection (free, 15-min delay)
-self.ib.reqMarketDataType(3)  # Type 3 = Delayed data
-
-# NaN handling for delayed data fields
-def safe_float(val, default=0.0):
-    if val is None or math.isnan(float(val)):
-        return default
-    return float(val)
-```
+Unlike IBKR, Futu doesn't support native bracket orders (parent-child linked orders).
+Stop loss and take profit must be managed by:
+- Option A: Conditional orders (if supported by account type)
+- Option B: Agent-managed stops (Claude monitors and issues sell orders)
 
 ---
 
-## 5. Test Results (2025-12-11)
+## 5. Commands
 
-### Connection Tests
-
-| Test | Status |
-|------|--------|
-| Java 17 + JavaFX | ✅ Pass |
-| IB Gateway Start | ✅ Pass |
-| 2FA (IB Key) | ✅ Pass |
-| API Connection | ✅ Pass |
-| Account Detection | ✅ Pass (DUO931484) |
-
-### IBKRClient Tests
-
-| Test | Status |
-|------|--------|
-| connect() | ✅ Pass |
-| is_connected() | ✅ Pass |
-| get_portfolio() | ✅ Pass |
-| get_positions() | ✅ Pass |
-| get_open_orders() | ✅ Pass |
-| execute_trade() | ✅ Pass |
-| cancel_order() | ✅ Pass |
-| _round_to_tick() | ✅ Pass (11 cases) |
-| _create_contract() auto-detect | ✅ Pass |
-| HK symbol stripping (0700→700) | ✅ Pass |
-| Delayed market data | ✅ Pass |
-| NaN handling | ✅ Pass |
-| disconnect() | ✅ Pass |
-
-### Paper Trading Tests
-
-| Test | Status | Details |
-|------|--------|---------|
-| Contract Qualification | ✅ Pass | AAPL conId: 265598 |
-| Place Limit Order | ✅ Pass | Order submitted |
-| Cancel Order | ✅ Pass | Order cancelled |
-| Position Tracking | ✅ Pass | Shows correctly |
-| HK Stock Scan | ✅ Pass | 80+ stocks scanned |
-| Agent Cycle | ✅ Pass | Full loop with Claude API |
-| Decision Logging | ✅ Pass | Logged to database |
-
----
-
-## 6. Commands
-
-### Start IBGA
+### Start OpenD
 ```bash
-cd /root/Catalyst-Trading-System-International/catalyst-international/ibga
-docker compose up -d
+cd /root/opend && docker compose up -d
 ```
 
-### Check Logs
+### Check OpenD Logs
 ```bash
-docker logs catalyst-ibga --tail 50
+docker logs catalyst-opend --tail 50
 ```
 
 ### Test Connection
 ```bash
-cd /root/Catalyst-Trading-System-International/catalyst-international
-IBKR_PORT=4000 python3 scripts/test_ibga_connection.py
+source /root/Catalyst-Trading-System-International/catalyst-international/venv/bin/activate
+python3 /root/opend/test_connection.py
 ```
 
 ### Quick Connection Test
-```bash
-python3 -c "
-from ib_async import IB
-ib = IB()
-ib.connect('127.0.0.1', 4000, clientId=1, timeout=15)
-print('Connected:', ib.managedAccounts())
-ib.disconnect()
-"
-```
+```python
+from brokers.futu import FutuClient
 
-### Test Paper Trade
-```bash
-python3 -c "
-from ib_async import IB, Stock, LimitOrder
-ib = IB()
-ib.connect('127.0.0.1', 4000, clientId=1, timeout=15)
-contract = Stock('AAPL', 'SMART', 'USD')
-ib.qualifyContracts(contract)
-order = LimitOrder('BUY', 1, 150.00)
-trade = ib.placeOrder(contract, order)
-ib.sleep(2)
-print(f'Order {trade.order.orderId}: {trade.orderStatus.status}')
-ib.cancelOrder(trade.order)
-ib.disconnect()
-"
-```
-
-### View VNC (for debugging)
-```
-http://209.38.87.27:5800
+client = FutuClient(paper_trading=True)
+client.connect()
+print(client.get_portfolio())
+client.disconnect()
 ```
 
 ---
 
-## 7. Architecture Diagram
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         IBGA CONTAINER                               │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐             │
-│  │    Xvfb     │───▶│ IB Gateway  │───▶│   jauto     │             │
-│  │  (Display)  │    │   (GUI)     │    │ (Automation)│             │
-│  └─────────────┘    └──────┬──────┘    └─────────────┘             │
-│                            │                                        │
-│                     Port 9000 (internal)                            │
-│                            │                                        │
-│                     ┌──────┴──────┐                                 │
-│                     │   socat     │                                 │
-│                     │ 4000→9000   │                                 │
-│                     └──────┬──────┘                                 │
-│                            │                                        │
-└────────────────────────────┼────────────────────────────────────────┘
-                             │
-                      Port 4000 (external)
-                             │
-              ┌──────────────┴──────────────┐
-              │         ib_async            │
-              │    (Python library)         │
-              └──────────────┬──────────────┘
-                             │
-              ┌──────────────┴──────────────┐
-              │       brokers/ibkr.py       │
-              │       IBKRClient v2.2.0     │
-              └──────────────┬──────────────┘
-                             │
-              ┌──────────────┴──────────────┐
-              │         Agent Tools         │
-              │  execute_trade, get_quote   │
-              └──────────────┬──────────────┘
-                             │
-              ┌──────────────┴──────────────┐
-              │        Claude API           │
-              │    (Decision Making)        │
-              └─────────────────────────────┘
-```
-
----
-
-## 8. Cost Summary
+## 6. Cost Summary
 
 | Item | Cost |
 |------|------|
 | DO Droplet (Basic, 1GB) | $6 |
 | DO Managed PostgreSQL | $15 |
 | Claude API (~200 cycles × 5K tokens) | ~$15-25 |
-| IBKR Data (delayed=free, real-time=~$20) | $0-20 |
-| **Total** | **~$36-66/month** |
+| Moomoo Data (real-time included) | $0 |
+| **Total** | **~$36-46/month** |
+
+**Cost Reduction**: Removed ~$20/month IBKR real-time data subscription.
 
 ---
 
-## 9. Known Limitations
+## 7. Migration Notes
 
-1. **Delayed market data (15-min)** - Using free delayed data; real-time requires ~HKD 130/month subscription
-2. **Account currency mismatch** - Paper account funded in AUD, trading HK stocks in HKD (currency conversion on trades)
-3. **Scan performance** - ~2 minutes for 80 stocks (sequential API calls)
-4. **Stock 6837** - Not found in IBKR, removed from scan list
+### What Changed (IBKR → Futu)
+- `brokers/ibkr.py` → `brokers/futu.py`
+- IBGA Docker → OpenD Docker
+- Port 4000 → Port 11111
+- ib_async library → futu-api library
+- IB Key 2FA → Password + trade unlock
+- 15-min delayed data → Real-time data
 
-### Resolved Issues (v2.2.0)
-- ~~Market data shows nan~~ → Fixed with safe_float() helpers
-- ~~HK symbols with leading zeros rejected~~ → Fixed with symbol stripping (0700→700)
-- ~~Portfolio shows $0~~ → Fixed with BASE/HKD currency detection
+### What Stayed the Same
+- Agent architecture (agent.py, tools.py, etc.)
+- Claude API integration
+- PostgreSQL database
+- Cron scheduling
+- HKEX tick size rules (same exchange)
+- Tool definitions (get_quote, execute_trade, etc.)
+
+### Files Removed (Dec 2025 cleanup)
+- `brokers/ibkr.py` - IBKR client (deleted)
+- `ibga/` directory - IBGA Docker setup (deleted)
+- `ibeam/` directory - IBeam REST API (deleted)
+- `scripts/ibga_*.py` - IBGA status scripts (deleted)
 
 ---
 
-**Document Version:** 4.2.0
-**Architecture:** Simple Droplet + Claude API + IBGA Socket API
-**Monthly Cost:** ~$36-66
-**Status:** Paper Trading Scheduled (First Run: Mon Dec 15, 09:30 HKT)
+## 8. Known Limitations
+
+1. **No native bracket orders** - Futu doesn't support parent-child linked orders; SL/TP must be agent-managed
+2. **Account verification pending** - Moomoo AU account being set up
+3. **Paper trading API** - Needs verification that Moomoo AU supports paper trading API
+
+### Resolved Issues (Migration)
+- ~~IB Key 2FA failures~~ → No 2FA with Moomoo
+- ~~15-min delayed data~~ → Real-time data included
+- ~~VNC debugging required~~ → Simple log files
+- ~~Manual re-auth often~~ → Auto-reconnect
+
+---
+
+**Document Version:** 5.0.0
+**Architecture:** Simple Droplet + Claude API + OpenD
+**Monthly Cost:** ~$36-46
+**Status:** Broker Migration In Progress

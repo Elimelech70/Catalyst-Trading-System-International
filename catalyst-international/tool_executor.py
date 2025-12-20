@@ -1,11 +1,15 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: tool_executor.py
-Version: 1.0.0
-Last Updated: 2025-12-06
+Version: 2.0.0
+Last Updated: 2025-12-20
 Purpose: Routes Claude's tool calls to actual implementations
 
 REVISION HISTORY:
+v2.0.0 (2025-12-20) - Migrated to Moomoo/Futu
+- Replaced IBKR with Futu broker client
+- Updated all broker references
+
 v1.0.0 (2025-12-06) - Initial implementation
 - Tool call routing and execution
 - Result formatting for Claude
@@ -23,7 +27,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from brokers.ibkr import get_ibkr_client
+from brokers.futu import get_futu_client
 from data.database import get_database
 from data.market import get_market_data
 from data.news import get_news_client
@@ -56,9 +60,9 @@ class ToolExecutor:
         self.trades_executed = 0
 
         # Initialize services
-        self.ibkr = get_ibkr_client()
+        self.broker = get_futu_client()
         self.db = get_database()
-        self.market = get_market_data(self.ibkr)
+        self.market = get_market_data(self.broker)
         self.patterns = get_pattern_detector(self.market)
         self.news = get_news_client()
         self.safety = get_safety_validator()
@@ -199,7 +203,7 @@ class ToolExecutor:
         take_profit = inputs["take_profit"]
 
         # Get portfolio info
-        portfolio = self.ibkr.get_portfolio()
+        portfolio = self.broker.get_portfolio()
         positions = portfolio["positions"]
 
         # Validate
@@ -220,7 +224,7 @@ class ToolExecutor:
 
     def _get_portfolio(self, inputs: dict) -> dict:
         """Get current portfolio status."""
-        portfolio = self.ibkr.get_portfolio()
+        portfolio = self.broker.get_portfolio()
         return portfolio
 
     # =========================================================================
@@ -238,8 +242,8 @@ class ToolExecutor:
         take_profit = inputs["take_profit"]
         reason = inputs["reason"]
 
-        # Execute via IBKR
-        result = self.ibkr.execute_trade(
+        # Execute via broker
+        result = self.broker.execute_trade(
             symbol=symbol,
             side=side,
             quantity=quantity,
@@ -290,7 +294,7 @@ class ToolExecutor:
         reason = inputs["reason"]
 
         # Check if we have a position
-        if not self.ibkr.has_position(symbol):
+        if not self.broker.has_position(symbol):
             return {
                 "status": "error",
                 "symbol": symbol,
@@ -298,7 +302,7 @@ class ToolExecutor:
             }
 
         # Close via IBKR
-        result = self.ibkr.close_position(symbol, reason)
+        result = self.broker.close_position(symbol, reason)
 
         # Update database
         if result.get("filled_price"):
@@ -329,13 +333,13 @@ class ToolExecutor:
         reason = inputs["reason"]
 
         # Validate with safety
-        portfolio = self.ibkr.get_portfolio()
+        portfolio = self.broker.get_portfolio()
         daily_pnl_pct = portfolio["daily_pnl_pct"] / 100
 
         safety_check = self.safety.validate_close_all(daily_pnl_pct, reason)
 
         # Close all positions
-        results = self.ibkr.close_all_positions(reason)
+        results = self.broker.close_all_positions(reason)
 
         # Calculate total P&L
         total_pnl = sum(r.get("realized_pnl", 0) for r in results)

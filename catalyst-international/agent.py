@@ -1,29 +1,20 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: agent.py
-Version: 1.3.0
-Last Updated: 2025-12-15
+Version: 2.0.0
+Last Updated: 2025-12-20
 Purpose: Main AI Agent loop that uses Claude to make trading decisions
 
 REVISION HISTORY:
-v1.3.0 (2025-12-15) - Added pre-flight IBGA verification
-- Agent now checks IBGA status before running
-- Requires fresh status file (< 10 minutes old)
-- Aborts with alert if IBGA not authenticated
-- Added --skip-preflight flag for testing
+v2.0.0 (2025-12-20) - Migrated to Moomoo/Futu
+- Replaced IBKR with Futu broker client via OpenD
+- Removed IBGA pre-flight checks (no longer needed)
+- Simpler authentication (no 2FA issues)
 
+v1.3.0 (2025-12-15) - Added pre-flight IBGA verification (deprecated)
 v1.2.0 (2025-12-11) - Fixed model name
-- Corrected fallback model from claude-sonnet-4-5 to claude-sonnet-4
-
 v1.1.0 (2025-12-10) - Environment loading fix
-- Added dotenv loading for .env file
-- Updated for IBGA broker integration
-
 v1.0.0 (2025-12-06) - Initial implementation
-- Claude API integration with tool use
-- Agentic loop with tool call handling
-- Cycle management and logging
-- Error handling and graceful shutdown
 
 Description:
 This is the main entry point for the Catalyst International trading agent.
@@ -57,9 +48,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from alerts import create_alert_callback, get_alert_sender
-from brokers.ibkr import get_ibkr_client, init_ibkr_client
+from brokers.futu import get_futu_client, init_futu_client
 from data.database import get_database, init_database
-from preflight import run_preflight_checks, refresh_ibga_status
 from safety import get_safety_validator
 from tool_executor import create_tool_executor
 from tools import TOOLS
@@ -208,20 +198,22 @@ class TradingAgent:
         except Exception as e:
             logger.error(f"Database initialization failed: {e}")
 
-        # IBKR - Use environment variables directly (YAML doesn't expand ${})
+        # Futu/Moomoo - Use environment variables directly
         try:
-            host = os.environ.get("IBKR_HOST", "127.0.0.1")
-            port = int(os.environ.get("IBKR_PORT", "4000"))
-            client_id = int(os.environ.get("IBKR_CLIENT_ID", "1"))
+            host = os.environ.get("FUTU_HOST", "127.0.0.1")
+            port = int(os.environ.get("FUTU_PORT", "11111"))
+            trade_password = os.environ.get("FUTU_TRADE_PWD", "")
 
-            init_ibkr_client(
+            client = init_futu_client(
                 host=host,
                 port=port,
-                client_id=client_id,
+                trade_password=trade_password,
+                paper_trading=True,
             )
-            logger.info(f"IBKR client initialized (port {port})")
+            client.connect()
+            logger.info(f"Futu client initialized and connected (port {port})")
         except Exception as e:
-            logger.error(f"IBKR initialization failed: {e}")
+            logger.error(f"Futu initialization failed: {e}")
 
         # Alerts
         try:
@@ -411,9 +403,11 @@ Make sure to log your decisions and reasoning throughout.
         except Exception:
             pass
 
-        # Disconnect IBKR
+        # Disconnect broker
         try:
-            get_ibkr_client().disconnect()
+            client = get_futu_client()
+            if client:
+                client.disconnect()
         except Exception:
             pass
 
@@ -445,16 +439,8 @@ def main():
         action="store_true",
         help="Run even if market is closed",
     )
-    parser.add_argument(
-        "--skip-preflight",
-        action="store_true",
-        help="Skip IBGA pre-flight checks (for testing only)",
-    )
-    parser.add_argument(
-        "--refresh-status",
-        action="store_true",
-        help="Refresh IBGA status before checking",
-    )
+    # Note: --skip-preflight and --refresh-status removed in v2.0.0
+    # These were for IBGA checks which are no longer needed with Futu
     args = parser.parse_args()
 
     # Create logs directory
@@ -463,35 +449,6 @@ def main():
     logger.info("=" * 60)
     logger.info("Catalyst Trading Agent - HKEX")
     logger.info("=" * 60)
-
-    # =========================================================================
-    # PRE-FLIGHT CHECKS - Verify IBGA is ready before proceeding
-    # =========================================================================
-    if not args.skip_preflight:
-        # Optionally refresh status first
-        if args.refresh_status:
-            logger.info("Refreshing IBGA status...")
-            refresh_ok, refresh_msg = refresh_ibga_status()
-            if not refresh_ok:
-                logger.warning(f"Status refresh failed: {refresh_msg}")
-            else:
-                logger.info(f"Status refresh: {refresh_msg}")
-
-        # Run pre-flight checks
-        preflight_ok, preflight_msg = run_preflight_checks(skip_market_hours=args.force)
-
-        if not preflight_ok:
-            logger.error("=" * 60)
-            logger.error("PRE-FLIGHT FAILED - Agent cannot start")
-            logger.error(f"Reason: {preflight_msg}")
-            logger.error("=" * 60)
-            logger.error("To fix: Run 'python3 scripts/ibga_status_checker.py' or check IBGA")
-            logger.error("To bypass (testing only): Use --skip-preflight flag")
-            sys.exit(1)
-
-        logger.info("Pre-flight checks passed")
-    else:
-        logger.warning("PRE-FLIGHT CHECKS SKIPPED (--skip-preflight flag)")
 
     # Initialize agent
     agent = TradingAgent(
