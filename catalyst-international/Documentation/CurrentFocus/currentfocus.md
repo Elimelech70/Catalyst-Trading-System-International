@@ -1,14 +1,64 @@
 # Current Focus - Catalyst Trading System International
 
 **Last Updated:** 2025-12-20
-**Status:** Broker Migration In Progress
-**Next Action:** Complete Moomoo account setup and test OpenD connection
+**Status:** Broker Migration In Progress - Account Setup Required
+**Next Action:** Enable HK stock trading on Moomoo AU account
 
 ---
 
 ## Executive Summary
 
-Migrating from Interactive Brokers (IBKR) to Moomoo/Futu due to persistent IB Key 2FA authentication failures. OpenD infrastructure is ready; awaiting Moomoo account verification.
+Migrating from Interactive Brokers (IBKR) to Moomoo/Futu due to persistent IB Key 2FA authentication failures. OpenD infrastructure is ready; **account requires HK trading enablement**.
+
+---
+
+## Current Blocker: HK Trading Account
+
+**Issue:** OpenD login fails with "账号密码不匹配" (password mismatch)
+
+**Root Cause (Research Findings):**
+1. Moomoo AU **DOES support OpenAPI** for HK/US stock trading
+2. Your account needs **HK stock trading specifically enabled** (not just a general AU account)
+3. First-time OpenD login requires completing **API Questionnaire and Agreements**
+4. The OpenAPI option is NOT in the desktop app menu - it's activated via OpenD itself
+
+---
+
+### ⚠️ ACTION REQUIRED: Enable HK Trading
+
+**Step 1: Enable Hong Kong Stock Trading**
+1. Log into **Moomoo AU mobile app** or https://www.moomoo.com/au
+2. Go to: **Me** → **Account & Security** → **Trading Permissions**
+   - Or: **Account** → **Market Access** → **Hong Kong Stocks**
+3. Click **Enable** or **Apply** for Hong Kong Stock Trading (HKEX)
+4. Complete identity verification if prompted
+5. Accept the HK stock trading agreements
+
+**Step 2: Complete OpenAPI Setup (First Login)**
+- Once HK trading is enabled, OpenD will prompt for:
+  - API Questionnaire (basic questions about API usage)
+  - OpenAPI User Agreement
+- This happens automatically on first successful OpenD login
+
+**Step 3: Test Connection**
+```bash
+cd /root/opend && docker compose up -d
+docker logs catalyst-opend -f
+```
+
+---
+
+### Research Sources
+- [Moomoo AU - Hong Kong Stocks](https://www.moomoo.com/au/invest/hk-stock) - "Trade 3500+ HK shares/ETFs"
+- [OpenAPI Authorities](https://openapi.moomoo.com/moomoo-api-doc/en/intro/authority.html) - Market requirements
+- [OpenAPI Introduction](https://openapi.futunn.com/futu-api-doc/en/intro/intro.html) - "Finish opening trading accounts before logging into OpenAPI"
+
+---
+
+**Credentials Configured:**
+- Account ID: `152537501`
+- Password: `Thisissecure1234!`
+- Location: `/root/opend/.env`
 
 ---
 
@@ -19,6 +69,7 @@ Migrating from Interactive Brokers (IBKR) to Moomoo/Futu due to persistent IB Ke
 |-----------|--------|-------|
 | OpenD Docker image | ✅ Ready | `ghcr.io/manhinhang/futu-opend-docker:ubuntu-stable` |
 | OpenD docker-compose | ✅ Ready | `/root/opend/docker-compose.yml` |
+| OpenD .env | ✅ Configured | Account ID + password set |
 | FutuClient | ✅ Ready | `brokers/futu.py` v1.0.0 |
 | Test script | ✅ Ready | `/root/opend/test_connection.py` |
 | futu-api package | ✅ Installed | v9.6.5608 |
@@ -28,9 +79,9 @@ Migrating from Interactive Brokers (IBKR) to Moomoo/Futu due to persistent IB Ke
 ### What's Pending
 | Item | Status | Blocker |
 |------|--------|---------|
-| Moomoo AU account | ⏳ Pending | Account verification in progress |
-| OpenD credentials | ⏳ Waiting | Need account ID + password |
-| OpenD container | ⏳ Not started | Needs credentials in `/root/opend/.env` |
+| HK Trading Permission | ⚠️ REQUIRED | Enable in Moomoo app/website |
+| OpenAPI Questionnaire | ⏳ Pending | Complete on first OpenD login |
+| OpenD Connection | ⏳ Blocked | Needs HK trading enabled |
 | Connection test | ⏳ Blocked | Needs OpenD running |
 | Paper trading test | ⏳ Blocked | Needs connection |
 
@@ -56,12 +107,13 @@ Migrating from Interactive Brokers (IBKR) to Moomoo/Futu due to persistent IB Ke
 ```
 /root/opend/
 ├── docker-compose.yml    # Container config
-├── .env                  # Credentials (EMPTY - needs filling)
+├── .env                  # Credentials (CONFIGURED ✅)
 ├── logs/                 # OpenD logs
 └── test_connection.py    # Connection test
 ```
 
 **Port:** 11111 (Futu API)
+**Status:** Waiting for HK trading to be enabled on account
 
 ### Trading System
 ```
@@ -78,26 +130,25 @@ Migrating from Interactive Brokers (IBKR) to Moomoo/Futu due to persistent IB Ke
 
 ## Next Steps (In Order)
 
-### 1. Complete Moomoo Account Setup
-- [ ] Verify Moomoo AU account
-- [ ] Get account ID (numeric)
-- [ ] Set up trade password
+### 1. ⚠️ Enable HK Stock Trading (CURRENT BLOCKER)
+- [ ] Log into Moomoo AU app/website
+- [ ] Navigate to Account → Trading Permissions
+- [ ] Enable Hong Kong Stock Trading (HKEX)
+- [ ] Complete any identity verification
+- [ ] Accept HK trading agreements
 
-### 2. Configure OpenD
-```bash
-# Fill in credentials
-nano /root/opend/.env
-
-# Add:
-FUTU_USER=<your_account_id>
-FUTU_PWD=<your_password>
-FUTU_TRADE_PWD=<your_trade_password>
+### 2. ✅ OpenD Credentials (DONE)
+```
+/root/opend/.env:
+FUTU_ACCOUNT_ID=152537501
+FUTU_ACCOUNT_PWD=Thisissecure1234!
 ```
 
-### 3. Start OpenD
+### 3. Start OpenD & Complete API Setup
 ```bash
 cd /root/opend && docker compose up -d
 docker logs catalyst-opend -f
+# First login will prompt for API questionnaire + agreement
 ```
 
 ### 4. Test Connection
@@ -108,7 +159,8 @@ python3 /root/opend/test_connection.py
 
 ### 5. Test Paper Trading
 ```bash
-# Quick test
+cd /root/Catalyst-Trading-System-International/catalyst-international
+source venv/bin/activate
 python3 -c "
 from brokers.futu import FutuClient
 client = FutuClient(paper_trading=True)
@@ -145,7 +197,9 @@ Current cron runs agent.py at:
 
 2. **Paper trading API** - Need to verify Moomoo AU supports paper trading via OpenAPI.
 
-3. **Account region** - If Moomoo AU doesn't support OpenAPI for HKEX, may need Futu HK account.
+3. ~~**Account region** - If Moomoo AU doesn't support OpenAPI for HKEX, may need Futu HK account.~~ **RESOLVED:** Research confirms Moomoo AU supports HKEX trading via OpenAPI.
+
+4. **HK Trading Must Be Enabled** - Standard Moomoo AU accounts need HK stock trading permission enabled separately before OpenD will authenticate.
 
 ---
 
@@ -173,4 +227,4 @@ Current cron runs agent.py at:
 
 ---
 
-**Next Session:** Fill in Moomoo credentials → Start OpenD → Test connection
+**Next Session:** Enable HK trading on Moomoo AU account → Start OpenD → Complete API questionnaire → Test connection
