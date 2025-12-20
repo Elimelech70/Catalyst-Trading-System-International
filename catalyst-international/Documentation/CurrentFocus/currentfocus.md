@@ -1,359 +1,176 @@
-# Current Focus - Catalyst International
+# Current Focus - Catalyst Trading System International
 
-**Date:** 2025-12-13
-**Status:** Ready for Automated Paper Trading
-**Last Updated:** 2025-12-13 20:00 HKT
-**First Automated Run:** Monday Dec 15, 09:30 HKT
+**Last Updated:** 2025-12-20
+**Status:** Broker Migration In Progress
+**Next Action:** Complete Moomoo account setup and test OpenD connection
 
 ---
 
 ## Executive Summary
 
-The Catalyst International trading agent is fully configured and ready for automated paper trading. All blocking issues resolved, cron scheduled, and lessons learned from US system have been analyzed and incorporated into CLAUDE.md v2.2.0.
+Migrating from Interactive Brokers (IBKR) to Moomoo/Futu due to persistent IB Key 2FA authentication failures. OpenD infrastructure is ready; awaiting Moomoo account verification.
 
 ---
 
-## Latest Updates (2025-12-13)
+## Current State
 
-### Cron Scheduling - COMPLETE
-```cron
-# Morning session (09:30 HKT = 01:30 UTC)
-30 1 * * 1-5 cd /root/Catalyst-Trading-System-International/catalyst-international && ./venv/bin/python3 agent.py >> logs/cron.log 2>&1
+### What's Working
+| Component | Status | Notes |
+|-----------|--------|-------|
+| OpenD Docker image | ✅ Ready | `ghcr.io/manhinhang/futu-opend-docker:ubuntu-stable` |
+| OpenD docker-compose | ✅ Ready | `/root/opend/docker-compose.yml` |
+| FutuClient | ✅ Ready | `brokers/futu.py` v1.0.0 |
+| Test script | ✅ Ready | `/root/opend/test_connection.py` |
+| futu-api package | ✅ Installed | v9.6.5608 |
+| Documentation | ✅ Updated | CLAUDE.md v3.0.0, architecture v5.0.0 |
+| GitHub | ✅ Pushed | Commit `69e5785` |
 
-# Afternoon session (13:00 HKT = 05:00 UTC)
-0 5 * * 1-5 cd /root/Catalyst-Trading-System-International/catalyst-international && ./venv/bin/python3 agent.py >> logs/cron.log 2>&1
+### What's Pending
+| Item | Status | Blocker |
+|------|--------|---------|
+| Moomoo AU account | ⏳ Pending | Account verification in progress |
+| OpenD credentials | ⏳ Waiting | Need account ID + password |
+| OpenD container | ⏳ Not started | Needs credentials in `/root/opend/.env` |
+| Connection test | ⏳ Blocked | Needs OpenD running |
+| Paper trading test | ⏳ Blocked | Needs connection |
+
+### What Was Removed (Dec 20, 2025)
+- IBKR broker (`brokers/ibkr.py`)
+- IBGA Docker container + setup (`ibga/`)
+- IBeam REST API (`ibeam/`)
+- Old agent module (`agent/`)
+- All IB-related scripts
+- `ib_async` Python package
+- Preflight checks (no longer needed)
+
+---
+
+## Infrastructure
+
+### Droplet
+- **IP:** 209.38.87.27
+- **Provider:** DigitalOcean ($6/month)
+- **OS:** Ubuntu
+
+### OpenD Gateway (New)
+```
+/root/opend/
+├── docker-compose.yml    # Container config
+├── .env                  # Credentials (EMPTY - needs filling)
+├── logs/                 # OpenD logs
+└── test_connection.py    # Connection test
 ```
 
-### US Lessons Gap Analysis - COMPLETE
+**Port:** 11111 (Futu API)
 
-Analyzed 6 critical lessons from US system operations:
-
-| Lesson | US Issue | IBKR Status |
-|--------|----------|-------------|
-| Order Mapping Bug | `"long"` → wrong side | ✅ Fixed |
-| Broker Reconciliation | Phantom positions | ✅ By architecture |
-| Position Sizing | Share-based (10x variance) | ⚠️ Guidance added |
-| Profit Taking | No exit rules | ✅ Claude decides |
-| Drawdown Analysis | No forensics | ✅ `log_decision` |
-| Risk Limits | Working | ✅ Maintained |
-
-**New Risk Identified:** Delayed data (15-min) requires discipline - use limit orders, wider stops.
-
-**Full Analysis:** `Documentation/Analysis/2025-12-13-Lessons-Gap-Analysis.md`
-
-### CLAUDE.md Updated to v2.2.0
-
-Added IBKR-specific lessons and rules:
-
-**New Lessons (11-14):**
-- Lesson 11: HKEX Tick Size Compliance
-- Lesson 12: Delayed Data Trading Rules
-- Lesson 13: HK Symbol Format
-- Lesson 14: Dollar-Based Position Sizing
-
-**New NEVER Rules (15-20):**
-- Never use market orders with delayed data
-- Never chase momentum with 15-min delay
-- Never use tight stops (< 3%)
-- Never trade news < 30 min old
-- Never use leading zeros in HK symbols
-- Never size by shares alone
-
-**New ALWAYS Rules (15-22):**
-- Always use limit orders
-- Always round to HKEX tick size
-- Always wait 30 min after market open
-- Always set wider stops (3-5%)
-
----
-
-## Work Completed (Dec 11)
-
-### 1. Enabled Delayed Market Data (Free)
-
-**Problem:** IBKR was rejecting market data requests with Error 354 "Requested market data is not subscribed"
-
-**Solution:** Added `reqMarketDataType(3)` after connection to enable 15-minute delayed data
-
-**File:** `brokers/ibkr.py` v2.2.0
-```python
-# After connect()
-self.ib.reqMarketDataType(3)  # Type 3 = Delayed data
+### Trading System
 ```
-
-**Result:** All HK stocks now return quotes without requiring paid subscription
-
----
-
-### 2. Fixed HK Symbol Format
-
-**Problem:** IBKR rejected symbols with leading zeros (e.g., "0700" for Tencent)
-
-**Error:** `No security definition has been found for the request, contract: Stock(symbol='0700', exchange='SEHK')`
-
-**Solution:** Strip leading zeros when creating SEHK contracts
-
-**File:** `brokers/ibkr.py` v2.2.0
-```python
-# Convert "0700" -> "700", "0005" -> "5"
-symbol = symbol.lstrip('0') or '0'
-```
-
-**Result:** All HK stock symbols now resolve correctly
-
----
-
-### 3. Fixed NaN Handling for Delayed Data
-
-**Problem:** Delayed data sometimes returns NaN for volume, causing `cannot convert float NaN to integer`
-
-**Solution:** Added `safe_float()` and `safe_int()` helper functions
-
-**Files:**
-- `brokers/ibkr.py` v2.2.0
-- `data/market.py` v1.1.0
-
-**Result:** Quotes return cleanly even when some fields are NaN
-
----
-
-### 4. Fixed Portfolio Currency Detection
-
-**Problem:** Portfolio showed $0 because code only checked HKD currency, but account is funded in AUD
-
-**Solution:** Check BASE currency first, then HKD
-
-**File:** `brokers/ibkr.py` v2.2.0
-
-**Result:** Portfolio correctly shows AUD 1,000,000 buying power
-
----
-
-### 5. Fixed Claude Model Name
-
-**Problem:** Agent failed with 404 error for model `claude-sonnet-4-5-20250514`
-
-**Solution:** Corrected fallback to `claude-sonnet-4-20250514`
-
-**File:** `agent.py` v1.2.0
-
-**Result:** Claude API calls succeed (HTTP 200 OK)
-
----
-
-### 6. Removed Invalid Stock
-
-**Problem:** Stock 6837 doesn't exist in IBKR, causing scan errors
-
-**Solution:** Commented out 6837 from HSCEI constituent list
-
-**File:** `data/market.py` v1.1.0
-
----
-
-## Test Results
-
-### Agent Cycle (2025-12-11 12:21 HKT)
-
-| Metric | Value |
-|--------|-------|
-| Cycle ID | hk_20251211_122106_ebadd7 |
-| Status | Completed (timed out during scan) |
-| Tools Called | get_portfolio, log_decision, scan_market |
-| Stocks Scanned | 80+ |
-| Trades Executed | 0 (expected - lunch break) |
-| Errors | None |
-
-### Portfolio Status
-```
-Cash: AUD 1,000,000
-Equity: 0 (no positions)
-Buying Power: AUD 1,000,000
-Account: DUO931484 (Paper Trading)
-```
-
-### Sample Quotes (Delayed Data)
-```
-700 (Tencent):    HKD 601.50
-9988 (Alibaba):   HKD 152.00
-1810 (Xiaomi):    HKD 42.12
-3690 (Meituan):   HKD 100.80
+/root/Catalyst-Trading-System-International/catalyst-international/
+├── agent.py              # Main entry point (v2.0.0)
+├── brokers/futu.py       # Moomoo/Futu client (v1.0.0)
+├── tool_executor.py      # Tool routing (v2.0.0)
+├── tools.py              # Claude tool definitions
+├── data/market.py        # Market data (v2.0.0)
+└── config/settings.py    # Configuration
 ```
 
 ---
 
-## Things to Consider
+## Next Steps (In Order)
 
-### 1. Market Data Delay (15 Minutes)
+### 1. Complete Moomoo Account Setup
+- [ ] Verify Moomoo AU account
+- [ ] Get account ID (numeric)
+- [ ] Set up trade password
 
-**Impact:**
-- Entry/exit prices will be based on 15-min old data
-- Not suitable for scalping or high-frequency strategies
-- Acceptable for swing trading / momentum strategies with wider stops
+### 2. Configure OpenD
+```bash
+# Fill in credentials
+nano /root/opend/.env
 
-**Recommendation:**
-- Use wider stop losses (account for 15-min price movement)
-- Consider upgrading to real-time data (HKD 130/month) for tighter execution
-
----
-
-### 2. Account Currency Mismatch
-
-**Current State:**
-- Account funded in AUD
-- Trading HK stocks in HKD
-
-**Impact:**
-- Currency conversion will occur on trades
-- P&L will be affected by AUD/HKD exchange rate
-- Margin calculations in AUD
-
-**Recommendation:**
-- Consider converting some AUD to HKD in IBKR account
-- Or accept currency risk as part of strategy
-
----
-
-### 3. Scan Performance (~2 Minutes)
-
-**Current State:**
-- Scanning 80 stocks takes ~2 minutes
-- Each stock requires a separate API call
-
-**Impact:**
-- Slow cycle time
-- May miss fast-moving opportunities
-
-**Options:**
-1. **Reduce stock universe** - Focus on top 20-30 most liquid
-2. **Parallel requests** - Would require code changes
-3. **Accept as-is** - 2 min scan is fine for momentum strategy
-
----
-
-### 4. Paper Trading Limitations
-
-**Current State:**
-- Using IBKR paper trading account (DUO931484)
-- AUD 1,000,000 simulated capital
-
-**Considerations:**
-- Paper fills may differ from live execution
-- No slippage simulation
-- Market impact not modeled
-
-**Before Going Live:**
-1. Run for at least 1-2 weeks in paper mode
-2. Review all logged decisions
-3. Check P&L consistency
-4. Test emergency stop functionality
-
----
-
-### 5. HK Market Hours
-
-**Trading Sessions (HKT):**
-- Morning: 09:30 - 12:00
-- Lunch Break: 12:00 - 13:00 (NO TRADING)
-- Afternoon: 13:00 - 16:00
-
-**Agent Behavior:**
-- Will close positions before lunch (configurable)
-- Will not trade during lunch break
-- Use `--force` flag to override for testing
-
----
-
-### 6. Risk Management Settings
-
-**Current Config (settings.yaml):**
-```yaml
-max_positions: 5
-max_position_pct: 0.20          # 20% per position
-max_daily_loss_pct: 0.02        # 2% emergency stop
-max_trade_loss_pct: 0.01        # 1% per trade
-min_risk_reward: 2.0            # 2:1 minimum
+# Add:
+FUTU_USER=<your_account_id>
+FUTU_PWD=<your_password>
+FUTU_TRADE_PWD=<your_trade_password>
 ```
 
-**Recommendation:**
-- Review these limits before live trading
-- Consider more conservative settings initially
-- Monitor daily loss warnings closely
+### 3. Start OpenD
+```bash
+cd /root/opend && docker compose up -d
+docker logs catalyst-opend -f
+```
+
+### 4. Test Connection
+```bash
+source /root/Catalyst-Trading-System-International/catalyst-international/venv/bin/activate
+python3 /root/opend/test_connection.py
+```
+
+### 5. Test Paper Trading
+```bash
+# Quick test
+python3 -c "
+from brokers.futu import FutuClient
+client = FutuClient(paper_trading=True)
+client.connect()
+print(client.get_portfolio())
+print(client.get_quote('700'))
+client.disconnect()
+"
+```
+
+### 6. Update Cron Jobs (if needed)
+Current cron runs agent.py at:
+- 01:30 UTC (09:30 HKT) - Morning session
+- 05:00 UTC (13:00 HKT) - Afternoon session
 
 ---
 
-## File Changes Summary
+## Key Files Reference
 
-| File | Version | Changes |
+| File | Version | Purpose |
 |------|---------|---------|
-| `CLAUDE.md` | 2.2.0 | Added IBKR lessons 11-14, updated NEVER/ALWAYS rules |
-| `architecture-international.md` | 4.2.0 | Added cron schedule, operational hours |
-| `IMPLEMENTATION-GUIDE.md` | 1.2.0 | Updated checklist with completed items |
-| `brokers/ibkr.py` | 2.2.0 | Delayed data, symbol fix, NaN handling, portfolio currency |
-| `data/market.py` | 1.1.0 | NaN handling, removed 6837 |
-| `agent.py` | 1.2.0 | Fixed model name fallback |
+| `CLAUDE.md` | 3.0.0 | Claude Code instructions |
+| `agent.py` | 2.0.0 | Main trading agent |
+| `brokers/futu.py` | 1.0.0 | Moomoo/Futu client |
+| `tool_executor.py` | 2.0.0 | Tool call routing |
+| `data/market.py` | 2.0.0 | Market data provider |
+| `architecture-international.md` | 5.0.0 | System architecture |
 
 ---
 
-## Next Steps
+## Known Issues / Risks
 
-### Immediate (Mon Dec 15)
-1. [x] Verify scan finds candidates with positive momentum - ✅ 80+ HK stocks scanned
-2. [x] Check decision logging is comprehensive - ✅ Logging to database working
-3. [x] Set up cron job for automatic execution - ✅ **COMPLETED 2025-12-13**
-4. [x] Analyze US lessons and update CLAUDE.md - ✅ **COMPLETED 2025-12-13**
-5. [ ] First automated run during active market hours - **Mon Dec 15, 09:30 HKT**
+1. **No native bracket orders** - Futu doesn't support parent-child linked SL/TP orders. Agent must manage stops manually.
 
-### This Week (Dec 15-20)
-1. [ ] Monitor first automated trading cycles
-2. [ ] Review agent logs after each session
-3. [ ] Configure email alerts (SMTP vars in .env are empty)
-4. [ ] Verify no phantom position drift (broker = source of truth)
+2. **Paper trading API** - Need to verify Moomoo AU supports paper trading via OpenAPI.
 
-### Before Live Trading (After 1 Week Paper)
-1. [ ] Complete 1 week of paper trading (Dec 15-20)
-2. [ ] Review all logged decisions and reasoning
-3. [ ] Test emergency close functionality
-4. [ ] Verify stop loss orders execute correctly
-5. [ ] Analyze P&L consistency
-6. [ ] Consider real-time data subscription (HKD 130/month)
+3. **Account region** - If Moomoo AU doesn't support OpenAPI for HKEX, may need Futu HK account.
 
 ---
 
-## How to Run
+## Recent Changes
 
-### Manual Execution
-```bash
-cd /root/Catalyst-Trading-System-International/catalyst-international
-source venv/bin/activate
-python3 agent.py          # During market hours
-python3 agent.py --force  # Force run (testing)
-python3 agent.py --live   # LIVE TRADING (use with caution)
-```
+### 2025-12-20 - Broker Migration
+- Removed all IBKR/IBGA code (7,517 lines deleted)
+- Added FutuClient (`brokers/futu.py`)
+- Updated all imports to use Futu
+- Set up OpenD Docker infrastructure
+- Updated documentation to v3.0.0/v5.0.0
 
-### Cron Setup (Recommended)
-```bash
-# Add to crontab -e
-# Morning session
-30 1 * * 1-5 cd /root/Catalyst-Trading-System-International/catalyst-international && /root/Catalyst-Trading-System-International/catalyst-international/venv/bin/python3 agent.py >> logs/cron.log 2>&1
-
-# Afternoon session
-0 5 * * 1-5 cd /root/Catalyst-Trading-System-International/catalyst-international && /root/Catalyst-Trading-System-International/catalyst-international/venv/bin/python3 agent.py >> logs/cron.log 2>&1
-```
-*Note: Cron times are in UTC. 01:30 UTC = 09:30 HKT, 05:00 UTC = 13:00 HKT*
+### 2025-12-16 to 2025-12-19 - IBGA Failures
+- Trading offline for 4 days due to IB Key 2FA failures
+- IBGA stuck in authentication loop
+- Decision made to migrate to Moomoo/Futu
 
 ---
 
-## Support Files
+## Contacts / Resources
 
-- **Agent Log:** `logs/agent.log`
-- **Config:** `config/settings.yaml`
-- **Environment:** `.env`
+- **Moomoo AU:** https://www.moomoo.com/au
+- **Futu OpenAPI Docs:** https://openapi.futunn.com/futu-api-doc/
+- **OpenD Docker:** https://github.com/manhinhang/futu-opend-docker
 
 ---
 
-## Contact / References
-
-- **IBKR API Docs:** https://interactivebrokers.github.io/tws-api/
-- **ib_async Library:** https://github.com/ib-api-reloaded/ib_async
-- **Claude API:** https://docs.anthropic.com/
+**Next Session:** Fill in Moomoo credentials → Start OpenD → Test connection
