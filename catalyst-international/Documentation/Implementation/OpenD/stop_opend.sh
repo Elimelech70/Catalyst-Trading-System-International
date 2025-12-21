@@ -1,7 +1,8 @@
 #!/bin/bash
 
-LOG_FILE="/home/craig/logs/opend/startup.log"
-PID_FILE="/home/craig/logs/opend/opend.pid"
+LOG_DIR="/root/logs/opend"
+LOG_FILE="$LOG_DIR/startup.log"
+PID_FILE="$LOG_DIR/opend.pid"
 
 echo "$(date '+%Y-%m-%d %H:%M:%S') - Stopping MooMoo OpenD..." | tee -a "$LOG_FILE"
 
