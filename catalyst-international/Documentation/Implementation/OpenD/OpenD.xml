@@ -28,7 +28,7 @@
 		<log_level>info</log_level>
 		<!-- moomoo OpenD日志路径，指定生成日志的路径，不设置时使用默认路径 -->
 		<!-- moomoo OpenD Log path, Specify the path to generate logs, Use default path if not set -->
-		<log_path>/home/craig/logs/opend</log_path>
+		<log_path>/root/logs/opend</log_path>
 		<!-- API推送协议格式，0：pb, 1：json -->
 		<!-- API push protocol format. 0: pb, 1: json -->
 		<push_proto_type>1</push_proto_type>
