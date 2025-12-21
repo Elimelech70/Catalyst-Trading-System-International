@@ -1,36 +1,76 @@
 # OpenD Implementation Summary
 
 **Date:** 2025-12-21
-**Status:** Implementation Complete - Pending 2FA Authentication
-**Version:** 1.0.0
+**Status:** PENDING - Rate Limited, Retry Scheduled 21:13 HKT
+**Version:** 1.1.0
+**Last Updated:** 2025-12-21 20:20 HKT
+
+---
+
+## CURRENT STATUS (Live Update)
+
+### Where We Are Now
+- **Switched from Docker to Native OpenD** at `/opt/opend/`
+- **Switched from email to Account ID**: `152537501`
+- **Rate Limited**: Too many login attempts, locked out until ~21:10 HKT
+- **Scheduled Retry**: Cron job at 21:13 HKT will attempt login once
+
+### Timeline Today
+| Time (HKT) | Event |
+|------------|-------|
+| ~11:00 | Started with Docker container, email login |
+| ~19:17 | Switched to account ID 152537501 |
+| ~19:28 | Hit rate limit "wait 36 minutes" |
+| ~19:30 | Systemd auto-restart extended limit to 48-50 min |
+| 20:18 | Stopped all retries, scheduled single retry |
+| **21:13** | **Scheduled retry (cron job)** |
+
+### Next Step
+After 21:15 HKT, check result:
+```bash
+cat /tmp/opend_retry.log
+```
 
 ---
 
 ## Executive Summary
 
-The Moomoo/Futu OpenD integration for HKEX trading has been fully implemented and tested. The system is ready for production use once the initial 2FA authentication is completed via the Moomoo mobile app.
+The Moomoo/Futu OpenD integration for HKEX trading has been fully implemented and tested. The system is ready for production use once the initial authentication succeeds.
 
 ---
 
 ## What Was Completed
 
-### 1. OpenD Docker Configuration
+### 1. OpenD Native Installation (Updated 2025-12-21)
 
-**Location:** `/root/opend/`
+**Location:** `/opt/opend/` (native binary, not Docker)
 
 ```
-/root/opend/
-├── docker-compose.yml    # Container configuration
-├── .env                  # Credentials (working)
-├── logs/                 # Container logs
-└── test_connection.py    # Connection test script
+/opt/opend/
+├── FutuOpenD              # Main binary
+├── FutuOpenD.xml          # Configuration file
+├── AppData.dat            # Session/auth data
+├── FTWebSocket            # WebSocket binary
+├── FTUpdate               # Update binary
+├── lib*.so                # Shared libraries
+├── telnet_verify.py       # 2FA verification script
+└── test_connection.py     # Connection test
 ```
 
-**Docker Image:** `ghcr.io/manhinhang/futu-opend-docker:ubuntu-stable`
+**Systemd Service:** `opend.service`
+```bash
+systemctl start opend    # Start
+systemctl stop opend     # Stop
+systemctl status opend   # Check status
+```
 
-**Credentials (verified working):**
-- Account: `craigjcolley@gmail.com`
+**Logs:** `/var/log/opend/opend.log`
+
+**Credentials (current):**
+- Account ID: `152537501`
 - Password: `Thisissecure1234!`
+
+> **Note:** Switched from email (`craigjcolley@gmail.com`) to account ID on 2025-12-21 per user request.
 
 ### 2. Path Updates for Droplet Environment
 
@@ -155,17 +195,16 @@ Files changed:
 
 ---
 
-## Testing Procedure (After 2FA Complete)
+## Testing Procedure (After Authentication)
 
-### Step 1: Start OpenD Container
+### Step 1: Start OpenD Service
 ```bash
-cd /root/opend
-docker compose up -d
+systemctl start opend
 ```
 
 ### Step 2: Verify Login Success
 ```bash
-docker logs catalyst-opend --tail 20
+tail -30 /var/log/opend/opend.log | grep -E "(Login|success|running|密码)"
 # Should show: 登录成功 (Login successful)
 ```
 
@@ -261,34 +300,43 @@ client.disconnect()
 
 ## Key Configuration Files
 
-### /root/opend/.env
-```bash
-# Moomoo/Futu OpenD Configuration
-FUTU_ACCOUNT_ID=craigjcolley@gmail.com
-FUTU_ACCOUNT_PWD=Thisissecure1234!
+### /opt/opend/FutuOpenD.xml (Native Installation)
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<futu_opend>
+    <ip>127.0.0.1</ip>
+    <api_port>11111</api_port>
+    <login_account>152537501</login_account>
+    <login_pwd>Thisissecure1234!</login_pwd>
+    <lang>en</lang>
+    <log_level>info</log_level>
+    <telnet_ip>127.0.0.1</telnet_ip>
+    <telnet_port>22222</telnet_port>
+    <websocket_ip>127.0.0.1</websocket_ip>
+    <websocket_port>33333</websocket_port>
+</futu_opend>
 ```
 
-### /root/opend/docker-compose.yml
-```yaml
-services:
-  opend:
-    image: ghcr.io/manhinhang/futu-opend-docker:ubuntu-stable
-    container_name: catalyst-opend
-    restart: "no"
-    ports:
-      - "11111:11111"
-    environment:
-      - FUTU_ACCOUNT_ID=${FUTU_ACCOUNT_ID}
-      - FUTU_ACCOUNT_PWD=${FUTU_ACCOUNT_PWD}
-    volumes:
-      - ./logs:/app/logs
-    healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "11111"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
+### /etc/systemd/system/opend.service
+```ini
+[Unit]
+Description=Futu OpenD Gateway
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/opend
+ExecStart=/opt/opend/FutuOpenD
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
 ```
+
+### Docker Setup (Deprecated)
+The Docker setup at `/root/opend/docker-compose.yml` is no longer used.
+Native installation at `/opt/opend/` is now the production setup.
 
 ---
 
@@ -321,11 +369,34 @@ services:
 
 ## Next Actions
 
-1. **Complete 2FA authentication** via Moomoo mobile app
-2. **Start OpenD container** and verify login success
-3. **Run full test suite** with paper trading
-4. **Test order execution** with small paper trade
-5. **Update CLAUDE.md** with verified configuration
+1. ⏳ **Wait for rate limit to expire** (~21:10 HKT)
+2. 🔄 **Cron job will auto-retry at 21:13 HKT**
+3. ✅ **Check result**: `cat /tmp/opend_retry.log`
+4. If login fails with password mismatch → verify password with user
+5. If login succeeds → run full connection test
+6. **Test order execution** with small paper trade
+7. **Update CLAUDE.md** with verified configuration
+
+---
+
+## Troubleshooting
+
+### Rate Limit Hit
+If you see "Login too many times, please wait X minutes":
+1. Stop all OpenD processes: `systemctl stop opend`
+2. Wait for the full timeout (don't retry early - it extends the limit!)
+3. Try once after timeout expires
+
+### Password Mismatch
+If you see "账号密码不匹配" (account password mismatch):
+1. Verify account ID is correct in `/opt/opend/FutuOpenD.xml`
+2. Verify password matches Moomoo account
+3. Try logging in via Moomoo app to confirm credentials
+
+### Check Current Config
+```bash
+grep -E "(login_account|login_pwd)" /opt/opend/FutuOpenD.xml
+```
 
 ---
 
@@ -337,5 +408,6 @@ services:
 
 ---
 
-**Implementation Status: COMPLETE**
-**Pending: 2FA Authentication**
+**Implementation Status:** Native OpenD installed at `/opt/opend/`
+**Current Blocker:** Rate limited - retry scheduled 21:13 HKT
+**Last Updated:** 2025-12-21 20:25 HKT
