@@ -162,6 +162,25 @@ cd /root/opend && ./OpenD
 
 **Result:** Started successfully WITHOUT requiring CAPTCHA!
 
+### Paper Trading Tests (2025-12-29 16:10 HKT)
+
+All tests passed (market was closed at 4:00 PM HKT):
+
+| Test | Result | Details |
+|------|--------|---------|
+| Connection | ✅ PASS | Connected to OpenD at 127.0.0.1:11111 |
+| Quote | ✅ PASS | Tencent (700): HKD 596.5, Bid 596.5 / Ask 597.0 |
+| Portfolio | ✅ PASS | Cash HKD 1,000,000 (paper account) |
+| Place Order | ✅ PASS | Order ID 2082892, status SUBMITTED |
+| Cancel Order | ✅ PASS | Orders 2082891, 2082892, 2082893 cancelled |
+| Order Status | ✅ PASS | Query returned full order details |
+| Market Order | ⏸ PENDING | Submitted but not filled (market closed) |
+
+**Fixes Applied:**
+- `SecurityFirm.MOOMOOAU` → `SecurityFirm.FUTUAU` (API uses old naming)
+- Added `safe_float()` to handle 'N/A' values in portfolio
+- Paper trading (SIMULATE) doesn't require trade unlock
+
 ### Successful Connection Output
 ```
 moomoo OpenD version: 9.6.5618(20251219131500)
