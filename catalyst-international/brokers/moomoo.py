@@ -154,12 +154,13 @@ class MoomooClient:
             )
 
             # Trade context for HK market
-            # CORRECT: Use MOOMOOAU for Australian accounts
+            # Note: moomoo-api still uses FUTU* naming internally
+            # FUTUAU = Moomoo Australia
             self.trade_ctx = OpenSecTradeContext(
                 filter_trdmarket=TrdMarket.HK,
                 host=self.host,
                 port=self.port,
-                security_firm=SecurityFirm.MOOMOOAU  # For Moomoo Australia
+                security_firm=SecurityFirm.FUTUAU  # For Moomoo Australia (FUTUAU in API)
             )
 
             # Unlock trade if password provided
@@ -305,14 +306,24 @@ class MoomooClient:
             return {"error": "No account data"}
 
         row = data.iloc[0]
+
+        def safe_float(val, default=0.0):
+            """Convert to float, handling 'N/A' and other non-numeric values."""
+            if val is None or val == 'N/A' or val == '':
+                return default
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return default
+
         return {
-            "cash": float(row.get("cash", 0)),
-            "total_assets": float(row.get("total_assets", 0)),
-            "market_value": float(row.get("market_val", 0)),
-            "frozen_cash": float(row.get("frozen_cash", 0)),
-            "available_funds": float(row.get("avl_withdrawal_cash", 0)),
-            "unrealized_pnl": float(row.get("unrealized_pl", 0)),
-            "realized_pnl": float(row.get("realized_pl", 0)),
+            "cash": safe_float(row.get("cash", 0)),
+            "total_assets": safe_float(row.get("total_assets", 0)),
+            "market_value": safe_float(row.get("market_val", 0)),
+            "frozen_cash": safe_float(row.get("frozen_cash", 0)),
+            "available_funds": safe_float(row.get("avl_withdrawal_cash", 0)),
+            "unrealized_pnl": safe_float(row.get("unrealized_pl", 0)),
+            "realized_pnl": safe_float(row.get("realized_pl", 0)),
             "currency": str(row.get("currency", "HKD")),
         }
 
@@ -377,8 +388,9 @@ class MoomooClient:
         if not self._connected:
             raise RuntimeError("Not connected to OpenD")
 
-        if not self._trade_unlocked:
-            raise RuntimeError("Trading not unlocked")
+        # Paper trading (SIMULATE) doesn't require trade unlock
+        if self.trd_env != TrdEnv.SIMULATE and not self._trade_unlocked:
+            raise RuntimeError("Trading not unlocked (required for REAL trading)")
 
         # Validate lot size (HKEX requires multiples of 100)
         if quantity % 100 != 0:
