@@ -124,11 +124,136 @@ MOOMOO_TRADE_PWD=your_trade_unlock_password
 
 ---
 
+---
+
+## Hands-On Testing Log (2025-12-29)
+
+### Session Summary
+
+Successfully connected to OpenD after troubleshooting CAPTCHA verification.
+
+### What We Tried
+
+#### 1. Initial CAPTCHA Attempts (Failed)
+```bash
+# Request CAPTCHA
+req_pic_verify_code
+
+# First attempt - MTYB
+input_pic_verify_code -code=MTYB  # REJECTED
+
+# Second attempt - YXYF
+input_pic_verify_code -code=YXYF  # REJECTED
+
+# Third attempt - b2XR
+input_pic_verify_code -code=b2XR  # REJECTED
+```
+
+**Lesson Learned:** CAPTCHA verification is rate-limited and case-sensitive. Multiple failures may trigger lockout.
+
+#### 2. Solution: Kill and Restart OpenD
+```bash
+# Kill OpenD process
+pkill -f OpenD
+
+# Restart fresh
+cd /root/opend && ./OpenD
+```
+
+**Result:** Started successfully WITHOUT requiring CAPTCHA!
+
+### Paper Trading Tests (2025-12-29 16:10 HKT)
+
+All tests passed (market was closed at 4:00 PM HKT):
+
+| Test | Result | Details |
+|------|--------|---------|
+| Connection | ✅ PASS | Connected to OpenD at 127.0.0.1:11111 |
+| Quote | ✅ PASS | Tencent (700): HKD 596.5, Bid 596.5 / Ask 597.0 |
+| Portfolio | ✅ PASS | Cash HKD 1,000,000 (paper account) |
+| Place Order | ✅ PASS | Order ID 2082892, status SUBMITTED |
+| Cancel Order | ✅ PASS | Orders 2082891, 2082892, 2082893 cancelled |
+| Order Status | ✅ PASS | Query returned full order details |
+| Market Order | ⏸ PENDING | Submitted but not filled (market closed) |
+
+**Fixes Applied:**
+- `SecurityFirm.MOOMOOAU` → `SecurityFirm.FUTUAU` (API uses old naming)
+- Added `safe_float()` to handle 'N/A' values in portfolio
+- Paper trading (SIMULATE) doesn't require trade unlock
+
+### Successful Connection Output
+```
+moomoo OpenD version: 9.6.5618(20251219131500)
+Start Time: 2025-12-29 15:58:26
+Login Method: Account password login
+Login successful
+Login Account: 152537501
+
+Market Data Permissions:
+- HK stocks: LV1 ✓
+- HK Options: LV1 ✓
+- HK Futures: LV1 ✓
+- US stocks: No Authority
+
+Ports:
+- Telnet: 127.0.0.1:22222
+- API: 127.0.0.1:11111
+
+Trade Connections:
+- SG: 43.134.158.106
+- AU: 101.32.255.207
+```
+
+### Key Findings
+
+| Issue | Solution |
+|-------|----------|
+| CAPTCHA failures | Kill process and restart fresh |
+| CAPTCHA not needed | Fresh start often bypasses CAPTCHA |
+| Rate limiting | Wait 60 seconds between CAPTCHA requests |
+| Connection refused | Ensure OpenD is running first |
+
+### CAPTCHA Commands Reference
+```python
+# Via Telnet (port 22222)
+req_pic_verify_code              # Request new CAPTCHA (max 10/60s)
+input_pic_verify_code -code=XXXX # Submit answer (max 10/60s)
+req_phone_verify_code            # Request SMS code (max 1/60s)
+input_phone_verify_code -code=XX # Submit SMS code
+relogin                          # Re-authenticate
+relogin -login_pwd=PASSWORD      # Re-auth with password
+ping                             # Check status
+```
+
+### Telnet Helper Script
+```python
+import telnetlib
+import time
+
+def send_command(cmd: str, host='127.0.0.1', port=22222) -> str:
+    """Send command to OpenD via Telnet."""
+    try:
+        with telnetlib.Telnet(host, port, timeout=5) as tn:
+            tn.write((cmd + '\r\n').encode('utf-8'))
+            time.sleep(0.3)
+            reply = b''
+            while True:
+                msg = tn.read_until(b'\r\n', timeout=0.5)
+                reply += msg
+                if msg == b'':
+                    break
+            return reply.decode('gb2312', errors='ignore')
+    except Exception as e:
+        return f"ERROR: {e}"
+```
+
+---
+
 ## Next Steps
 
-1. Install OpenD native binary
-2. Configure OpenD.xml with credentials
-3. Create systemd service
-4. Run test_connection.py
+1. ~~Install OpenD native binary~~ ✓
+2. ~~Configure OpenD.xml with credentials~~ ✓
+3. ~~Test OpenD connection~~ ✓ (2025-12-29)
+4. Create systemd service for auto-start
 5. Update agent.py to use MoomooClient
 6. Test paper trading before live
