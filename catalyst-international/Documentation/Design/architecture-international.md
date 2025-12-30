@@ -1,42 +1,39 @@
 # Catalyst Trading System International - Agent Architecture
 
-**Name of Application:** Catalyst Trading System International
-**Name of File:** architecture-international.md
-**Version:** 5.0.0
-**Last Updated:** 2025-12-20
-**Target Exchange:** Hong Kong Stock Exchange (HKEX)
-**Broker:** Moomoo/Futu via OpenD Gateway (migrated from IBKR Dec 2025)
-**Architecture:** AI Agent Pattern (Simple Droplet + Claude API + OpenD)
-**Status:** Broker Migration In Progress
+**Name of Application:** Catalyst Trading System International  
+**Name of File:** architecture-international.md  
+**Version:** 5.1.0  
+**Last Updated:** 2025-12-29  
+**Target Exchange:** Hong Kong Stock Exchange (HKEX)  
+**Broker:** Moomoo via OpenD Gateway  
+**Architecture:** AI Agent Pattern (Simple Droplet + Claude API + OpenD)  
+**Status:** Production Ready
 
 ---
 
 ## REVISION HISTORY
 
-**v5.0.0 (2025-12-20)** - BROKER MIGRATION: IBKR → MOOMOO/FUTU
-- **MAJOR**: Migrated from Interactive Brokers to Moomoo/Futu
-- Replaced IBGA Docker container with OpenD Docker container
-- Added `brokers/futu.py` (FutuClient) - simpler authentication
-- Real-time market data included (no more 15-min delay)
+**v5.1.0 (2025-12-29)** - MOOMOO BRANDING CLEANUP
+- **BREAKING**: Removed all Futu references - use Moomoo terminology only
+- **BREAKING**: Removed Docker approach - OpenD runs as native binary
+- Fixed Python SDK: `moomoo-api` (not `futu-api`)
+- Fixed imports: `from moomoo import ...` (not `from futu import ...`)
+- Fixed config format: `<moomoo_opend>` root element
+- Fixed SecurityFirm: `MOOMOOAU` for Australian accounts
+- Download OpenD from: https://www.moomoo.com/download/OpenAPI
+- Official docs: https://openapi.moomoo.com/moomoo-api-doc/en/intro/intro.html
+
+**v5.0.0 (2025-12-20)** - BROKER MIGRATION: IBKR → MOOMOO
+- Migrated from Interactive Brokers to Moomoo
+- Replaced IBGA Docker container with OpenD
 - No more IB Key 2FA issues
-- OpenD setup at `/root/opend/`
-- IBKR code kept at `brokers/ibkr.py` for reference
+- Real-time market data included
 
-**v4.2.0 (2025-12-13)** - Cron Scheduling Configured
-- Added cron jobs for automated trading (morning & afternoon sessions)
-- Updated system status to "Paper Trading Scheduled"
-- Added operational schedule documentation
-
-**v4.1.0 (2025-12-11)** - Production Ready Updates (IBKR)
-- Updated IBKRClient to v2.2.0 (delayed data, HK symbol fix, NaN handling)
-- Clarified: Uses own PostgreSQL database (not shared with US)
-
-**v4.0.0 (2025-12-10)** - IBGA Socket API Integration
-- Replaced IBeam Web API with IBGA (heshiming/ibga) Docker container
-- Uses ib_async socket API for broker communication
-
-**v3.0.0 (2025-12-09)** - IBeam Web API Integration (Deprecated)
-**v2.0.0 (2025-12-03)** - Simplified Architecture
+**v4.2.0 (2025-12-13)** - Cron Scheduling Configured  
+**v4.1.0 (2025-12-11)** - Production Ready Updates  
+**v4.0.0 (2025-12-10)** - IBGA Socket API Integration  
+**v3.0.0 (2025-12-09)** - Deprecated  
+**v2.0.0 (2025-12-03)** - Simplified Architecture  
 **v1.0.0 (2025-12-03)** - Initial Agent Architecture
 
 ---
@@ -45,27 +42,27 @@
 
 ### 1.1 Current Production Setup
 
-Minimal infrastructure with Moomoo/Futu OpenD:
+Minimal infrastructure with Moomoo OpenD (native binary):
 
 - **1 small droplet** ($6/month) - IP: 209.38.87.27
 - **1 Python script** (the agent)
-- **1 Docker container** (OpenD for Futu gateway)
+- **OpenD** (native binary gateway - NO Docker)
 - **Cron** (the trigger)
 - **Claude API** (the brain)
-- **Futu OpenAPI** (the broker via futu-api)
+- **Moomoo API** (the broker via `moomoo-api` Python SDK)
 - **PostgreSQL** (own DO Managed DB)
 
-### 1.2 Why Moomoo/Futu (Migrated from IBKR Dec 2025)
+### 1.2 Why Moomoo (Migrated from IBKR Dec 2025)
 
-| Aspect | IBKR (Old) | Moomoo/Futu (New) |
-|--------|------------|-------------------|
+| Aspect | IBKR (Old) | Moomoo (New) |
+|--------|------------|--------------|
 | **Gateway** | IBGA Docker + Java + VNC | OpenD native binary |
 | **Authentication** | IB Key 2FA (constant failures) | Password + unlock |
-| **Market Data** | 15-min delayed (no subscription) | Real-time included |
-| **Container deps** | Docker, Java 17, JavaFX | Docker only |
+| **Market Data** | 15-min delayed (without subscription) | Real-time included |
+| **Container deps** | Docker, Java 17, JavaFX | None (native Linux) |
 | **Debug method** | VNC into container | Simple log files |
 | **Reconnection** | Manual re-auth often | Auto-reconnect |
-| **API Type** | ib_async socket | futu-api socket |
+| **API Type** | ib_async socket | moomoo-api socket |
 
 ### 1.3 Operational Schedule
 
@@ -106,51 +103,52 @@ Minimal infrastructure with Moomoo/Futu OpenD:
 │                           │             └────────┬─────────┘        │
 │                           │                      │                  │
 │                           ▼                      ▼                  │
-│                    ┌─────────────┐       ┌─────────────┐            │
-│                    │ Claude API  │       │   OpenD     │            │
-│                    │ (Anthropic) │       │  (Docker)   │            │
-│                    └─────────────┘       └──────┬──────┘            │
-│                                                 │                   │
-│                                                 ▼                   │
-│                                          ┌─────────────┐            │
-│                                          │Futu Gateway │            │
-│                                          │ (Port 11111)│            │
-│                                          └─────────────┘            │
-│                                                                      │
-└──────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-                    ┌─────────────────┐
-                    │   PostgreSQL    │
-                    │ (DO Managed DB) │
-                    │  International  │
-                    └─────────────────┘
+│                    ┌──────────────┐     ┌──────────────────┐        │
+│                    │   CLAUDE     │     │   MOOMOO CLIENT  │        │
+│                    │    API       │     │                  │        │
+│                    │  (Anthropic) │     │  brokers/moomoo.py│       │
+│                    └──────────────┘     └────────┬─────────┘        │
+│                                                  │                  │
+│                                                  ▼                  │
+│                                         ┌──────────────────┐        │
+│                                         │     OpenD        │        │
+│                                         │  (Native Binary) │        │
+│                                         │  Port 11111      │        │
+│                                         └────────┬─────────┘        │
+└──────────────────────────────────────────────────┼──────────────────┘
+                                                   │
+                      ┌────────────────────────────┼────────────────┐
+                      │                            │                │
+                      ▼                            ▼                ▼
+              ┌──────────────┐           ┌──────────────┐   ┌──────────────┐
+              │   MOOMOO     │           │  POSTGRESQL  │   │    HKEX      │
+              │   SERVERS    │           │  (DO Managed)│   │   EXCHANGE   │
+              └──────────────┘           └──────────────┘   └──────────────┘
 ```
 
-### 1.5 The Agent Loop
+### 1.5 Agent Loop Flow
 
 ```
-CRON triggers at market hour
-        │
-        ▼
 ┌───────────────────┐
-│ 1. Build Context  │  ← Portfolio, market data, news
+│ 1. CRON Triggers  │  ← 09:30 HKT or 13:00 HKT
 └────────┬──────────┘
          │
          ▼
 ┌───────────────────┐
-│ 2. Call Claude    │  ← Send context + tools
+│ 2. Build Context  │  ← Load positions, cash, market state
 └────────┬──────────┘
          │
          ▼
 ┌───────────────────┐
-│ 3. Claude Returns │  ← "Call execute_trade()"
-│    Tool Request   │
+│ 3. Call Claude    │  ← Send context + tools to Claude API
+│    API            │
 └────────┬──────────┘
          │
          ▼
 ┌───────────────────┐
-│ 4. Execute Tool   │  ← FutuClient calls OpenD
+│ 4. Claude Request │  ← Claude decides which tool to use
+│    Tool +         │
+│    Execute Tool   │  ← MoomooClient calls OpenD
 └────────┬──────────┘
          │
          ▼
@@ -185,7 +183,7 @@ catalyst-international/
 │
 ├── brokers/
 │   ├── __init__.py
-│   └── futu.py                 # Moomoo/Futu client via OpenD (v1.0.0)
+│   └── moomoo.py               # Moomoo client via OpenD (v1.0.0)
 │
 ├── data/
 │   ├── __init__.py
@@ -207,58 +205,117 @@ catalyst-international/
 └── README.md
 
 /root/opend/                    # OpenD gateway (separate directory)
-├── docker-compose.yml          # OpenD container config
-├── .env                        # FUTU_USER, FUTU_PWD, FUTU_TRADE_PWD
-├── logs/                       # OpenD logs
-└── test_connection.py          # Connection verification script
+├── OpenD                       # Native binary executable
+├── OpenD.xml                   # Configuration file
+└── logs/                       # OpenD logs
 ```
 
 ---
 
 ## 3. OpenD Configuration
 
-### 3.1 Docker Compose
+### 3.1 Download OpenD
 
-```yaml
-# /root/opend/docker-compose.yml
-version: "3.8"
+Download from official Moomoo site: **https://www.moomoo.com/download/OpenAPI**
 
-services:
-  opend:
-    image: ghcr.io/manhinhang/futu-opend-docker:ubuntu-stable
-    container_name: catalyst-opend
-    restart: unless-stopped
-    ports:
-      - "11111:11111"  # API port
-    environment:
-      - FUTU_USER=${FUTU_USER}
-      - FUTU_PWD=${FUTU_PWD}
-      - FUTU_RSA=
-      - FUTU_TRADE_PWD=${FUTU_TRADE_PWD:-}
-    volumes:
-      - ./logs:/app/logs
-    healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "11111"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-```
-
-### 3.2 Environment Variables
+Select the Ubuntu/Linux version and extract to `/root/opend/`
 
 ```bash
-# /root/opend/.env
-FUTU_USER=<your_moomoo_account_id>
-FUTU_PWD=<your_password>
-FUTU_TRADE_PWD=<your_trade_unlock_password>
+# Create directory
+mkdir -p /root/opend
+cd /root/opend
+
+# Extract downloaded archive (version may vary)
+tar -xzf OpenD_*_Ubuntu.tar.gz
+
+# Make executable
+chmod +x OpenD
+```
+
+### 3.2 Configuration File (OpenD.xml)
+
+```xml
+<moomoo_opend>
+    <!-- Basic parameters -->
+    <ip>127.0.0.1</ip>
+    <api_port>11111</api_port>
+    
+    <!-- Login credentials -->
+    <login_account>your_email@example.com</login_account>
+    
+    <!-- Use MD5 hash for production (more secure) -->
+    <login_pwd_md5>YOUR_32_CHAR_MD5_HASH</login_pwd_md5>
+    
+    <!-- OR plain text for testing (less secure) -->
+    <!-- <login_pwd>your_password</login_pwd> -->
+    
+    <!-- Language: en or chs -->
+    <lang>en</lang>
+    
+    <!-- Logging -->
+    <log_level>info</log_level>
+    
+    <!-- API Settings -->
+    <push_proto_type>0</push_proto_type>
+    <price_reminder_push>1</price_reminder_push>
+    <auto_hold_quote_right>1</auto_hold_quote_right>
+    
+    <!-- Timezone for HK trading -->
+    <future_trade_api_time_zone>UTC+8</future_trade_api_time_zone>
+    
+    <!-- US-specific protections (if trading US stocks) -->
+    <pdt_protection>1</pdt_protection>
+    <dtcall_confirmation>1</dtcall_confirmation>
+</moomoo_opend>
+```
+
+**Generate MD5 hash for password:**
+```bash
+echo -n "your_password" | md5sum | cut -d' ' -f1
+```
+
+### 3.3 Systemd Service
+
+```ini
+# /etc/systemd/system/opend.service
+[Unit]
+Description=Moomoo OpenD Gateway
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/opend
+ExecStart=/root/opend/OpenD
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Enable and start:**
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable opend
+sudo systemctl start opend
+sudo systemctl status opend
+```
+
+### 3.4 Environment Variables
+
+```bash
+# /root/Catalyst-Trading-System-International/catalyst-international/.env
+MOOMOO_HOST=127.0.0.1
+MOOMOO_PORT=11111
+MOOMOO_TRADE_PWD=your_trade_unlock_password
 ```
 
 ---
 
-## 4. FutuClient Implementation
+## 4. MoomooClient Implementation
 
-### 4.1 brokers/futu.py (v1.0.0)
+### 4.1 brokers/moomoo.py (v1.0.0)
 
 Key features:
 - Simple password-based authentication (no 2FA)
@@ -269,7 +326,7 @@ Key features:
 - Auto-reconnect support
 
 ```python
-# Key methods in FutuClient:
+# Key methods in MoomooClient:
 
 def connect(self) -> bool:
     """Connect to OpenD and unlock trading"""
@@ -294,7 +351,7 @@ def close_all_positions(self, reason) -> list[OrderResult]:
     """Emergency: close all positions"""
 
 def _format_hk_symbol(self, symbol: str) -> str:
-    """Format '700' -> 'HK.00700' for Futu API"""
+    """Format '700' -> 'HK.00700' for Moomoo API"""
 
 def _round_to_tick(self, price: float) -> float:
     """Round to valid HKEX tick size (11 tiers)"""
@@ -303,18 +360,18 @@ def _round_to_tick(self, price: float) -> float:
 ### 4.2 Symbol Format Handling
 
 ```python
-# Input formats → Futu format
+# Input formats → Moomoo format
 client._format_hk_symbol('700')   # → 'HK.00700'
 client._format_hk_symbol('0700')  # → 'HK.00700'
 client._format_hk_symbol('9988')  # → 'HK.09988'
 
-# Parse back from Futu format
+# Parse back from Moomoo format
 client._parse_hk_symbol('HK.00700')  # → '700'
 ```
 
 ### 4.3 Key Difference: No Bracket Orders
 
-Unlike IBKR, Futu doesn't support native bracket orders (parent-child linked orders).
+Unlike IBKR, Moomoo doesn't support native bracket orders (parent-child linked orders).
 Stop loss and take profit must be managed by:
 - Option A: Conditional orders (if supported by account type)
 - Option B: Agent-managed stops (Claude monitors and issues sell orders)
@@ -325,12 +382,19 @@ Stop loss and take profit must be managed by:
 
 ### Start OpenD
 ```bash
-cd /root/opend && docker compose up -d
+sudo systemctl start opend
+# OR manually:
+cd /root/opend && ./OpenD
+```
+
+### Check OpenD Status
+```bash
+sudo systemctl status opend
 ```
 
 ### Check OpenD Logs
 ```bash
-docker logs catalyst-opend --tail 50
+tail -f /root/opend/logs/*.log
 ```
 
 ### Test Connection
@@ -341,9 +405,9 @@ python3 /root/opend/test_connection.py
 
 ### Quick Connection Test
 ```python
-from brokers.futu import FutuClient
+from brokers.moomoo import MoomooClient
 
-client = FutuClient(paper_trading=True)
+client = MoomooClient(paper_trading=True)
 client.connect()
 print(client.get_portfolio())
 client.disconnect()
@@ -361,51 +425,45 @@ client.disconnect()
 | Moomoo Data (real-time included) | $0 |
 | **Total** | **~$36-46/month** |
 
-**Cost Reduction**: Removed ~$20/month IBKR real-time data subscription.
+---
+
+## 7. Key Resources
+
+| Resource | URL |
+|----------|-----|
+| OpenD Download | https://www.moomoo.com/download/OpenAPI |
+| Moomoo API Docs | https://openapi.moomoo.com/moomoo-api-doc/en/intro/intro.html |
+| Python SDK (PyPI) | https://pypi.org/project/moomoo-api/ |
+| Quick Start Guide | https://openapi.moomoo.com/moomoo-api-doc/en/quick/opend-base.html |
 
 ---
 
-## 7. Migration Notes
+## 8. HKEX Tick Sizes
 
-### What Changed (IBKR → Futu)
-- `brokers/ibkr.py` → `brokers/futu.py`
-- IBGA Docker → OpenD Docker
-- Port 4000 → Port 11111
-- ib_async library → futu-api library
-- IB Key 2FA → Password + trade unlock
-- 15-min delayed data → Real-time data
+| Price Range (HKD) | Tick Size |
+|-------------------|-----------|
+| < 0.25 | 0.001 |
+| 0.25 - 0.50 | 0.005 |
+| 0.50 - 10.00 | 0.01 |
+| 10.00 - 20.00 | 0.02 |
+| 20.00 - 100.00 | 0.05 |
+| 100.00 - 200.00 | 0.10 |
+| 200.00 - 500.00 | 0.20 |
+| 500.00 - 1000.00 | 0.50 |
+| 1000.00 - 2000.00 | 1.00 |
+| 2000.00 - 5000.00 | 2.00 |
+| > 5000.00 | 5.00 |
 
-### What Stayed the Same
-- Agent architecture (agent.py, tools.py, etc.)
-- Claude API integration
-- PostgreSQL database
-- Cron scheduling
-- HKEX tick size rules (same exchange)
-- Tool definitions (get_quote, execute_trade, etc.)
-
-### Files Removed (Dec 2025 cleanup)
-- `brokers/ibkr.py` - IBKR client (deleted)
-- `ibga/` directory - IBGA Docker setup (deleted)
-- `ibeam/` directory - IBeam REST API (deleted)
-- `scripts/ibga_*.py` - IBGA status scripts (deleted)
+Use `client._round_to_tick(price)` to ensure compliance.
 
 ---
 
-## 8. Known Limitations
+## 9. Known Limitations
 
-1. **No native bracket orders** - Futu doesn't support parent-child linked orders; SL/TP must be agent-managed
-2. **Account verification pending** - Moomoo AU account being set up
-3. **Paper trading API** - Needs verification that Moomoo AU supports paper trading API
-
-### Resolved Issues (Migration)
-- ~~IB Key 2FA failures~~ → No 2FA with Moomoo
-- ~~15-min delayed data~~ → Real-time data included
-- ~~VNC debugging required~~ → Simple log files
-- ~~Manual re-auth often~~ → Auto-reconnect
+1. **No native bracket orders** - Moomoo doesn't support parent-child linked SL/TP orders
+2. **Lot size** - HKEX requires trades in multiples of 100 shares
+3. **Market hours only** - No pre/post market trading for HKEX
 
 ---
 
-**Document Version:** 5.0.0
-**Architecture:** Simple Droplet + Claude API + OpenD
-**Monthly Cost:** ~$36-46
-**Status:** Broker Migration In Progress
+## End of Document
