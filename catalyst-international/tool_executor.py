@@ -1,11 +1,15 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: tool_executor.py
-Version: 2.0.0
-Last Updated: 2025-12-20
+Version: 2.1.0
+Last Updated: 2025-12-30
 Purpose: Routes Claude's tool calls to actual implementations
 
 REVISION HISTORY:
+v2.1.0 (2025-12-30) - Updated to use MoomooClient
+- Changed imports from futu to moomoo
+- Using moomoo-api SDK
+
 v2.0.0 (2025-12-20) - Migrated to Moomoo/Futu
 - Replaced IBKR with Futu broker client
 - Updated all broker references
@@ -27,7 +31,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from brokers.futu import get_futu_client
+from brokers.moomoo import get_moomoo_client
 from data.database import get_database
 from data.market import get_market_data
 from data.news import get_news_client
@@ -60,7 +64,7 @@ class ToolExecutor:
         self.trades_executed = 0
 
         # Initialize services
-        self.broker = get_futu_client()
+        self.broker = get_moomoo_client()
         self.db = get_database()
         self.market = get_market_data(self.broker)
         self.patterns = get_pattern_detector(self.market)
