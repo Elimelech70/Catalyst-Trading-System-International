@@ -1,11 +1,16 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: agent.py
-Version: 2.0.0
-Last Updated: 2025-12-20
+Version: 2.1.0
+Last Updated: 2025-12-30
 Purpose: Main AI Agent loop that uses Claude to make trading decisions
 
 REVISION HISTORY:
+v2.1.0 (2025-12-30) - Updated to use MoomooClient
+- Changed imports from futu to moomoo
+- Updated env vars: FUTU_* to MOOMOO_*
+- Using moomoo-api SDK (not futu-api)
+
 v2.0.0 (2025-12-20) - Migrated to Moomoo/Futu
 - Replaced IBKR with Futu broker client via OpenD
 - Removed IBGA pre-flight checks (no longer needed)
@@ -48,7 +53,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from alerts import create_alert_callback, get_alert_sender
-from brokers.futu import get_futu_client, init_futu_client
+from brokers.moomoo import get_moomoo_client, init_moomoo_client
 from data.database import get_database, init_database
 from safety import get_safety_validator
 from tool_executor import create_tool_executor
@@ -198,22 +203,21 @@ class TradingAgent:
         except Exception as e:
             logger.error(f"Database initialization failed: {e}")
 
-        # Futu/Moomoo - Use environment variables directly
+        # Moomoo - Use environment variables directly
         try:
-            host = os.environ.get("FUTU_HOST", "127.0.0.1")
-            port = int(os.environ.get("FUTU_PORT", "11111"))
-            trade_password = os.environ.get("FUTU_TRADE_PWD", "")
+            host = os.environ.get("MOOMOO_HOST", "127.0.0.1")
+            port = int(os.environ.get("MOOMOO_PORT", "11111"))
+            trade_password = os.environ.get("MOOMOO_TRADE_PWD", "")
 
-            client = init_futu_client(
+            client = init_moomoo_client(
                 host=host,
                 port=port,
                 trade_password=trade_password,
                 paper_trading=True,
             )
-            client.connect()
-            logger.info(f"Futu client initialized and connected (port {port})")
+            logger.info(f"Moomoo client initialized and connected (port {port})")
         except Exception as e:
-            logger.error(f"Futu initialization failed: {e}")
+            logger.error(f"Moomoo initialization failed: {e}")
 
         # Alerts
         try:
@@ -405,7 +409,7 @@ Make sure to log your decisions and reasoning throughout.
 
         # Disconnect broker
         try:
-            client = get_futu_client()
+            client = get_moomoo_client()
             if client:
                 client.disconnect()
         except Exception:
