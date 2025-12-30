@@ -1,11 +1,16 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: moomoo.py
-Version: 1.0.0
-Last Updated: 2025-12-29
+Version: 1.1.0
+Last Updated: 2025-12-30
 Purpose: Moomoo client for HKEX trading via OpenD gateway
 
 REVISION HISTORY:
+v1.1.0 (2025-12-30) - Add batch quote support
+- Added get_quotes_batch() for multiple symbols in one API call
+- Fixes rate limiting issue (max 60 requests per 30 seconds)
+- Batch API supports up to 400 symbols per request
+
 v1.0.0 (2025-12-29) - Initial implementation
 - Uses moomoo-api Python SDK (NOT futu-api)
 - Connects to OpenD native binary gateway
@@ -286,6 +291,69 @@ class MoomooClient:
             "ask_vol": int(row.get("ask_vol", 0)),
             "update_time": str(row.get("update_time", "")),
         }
+
+    def get_quotes_batch(self, symbols: List[str]) -> dict:
+        """Get real-time quotes for multiple symbols in one API call.
+
+        This method avoids rate limiting by fetching multiple symbols at once.
+        Moomoo API supports up to 400 symbols per request.
+        Rate limit: 60 requests per 30 seconds.
+
+        Args:
+            symbols: List of stock codes (e.g., ['700', '9988', '1810'])
+
+        Returns:
+            Dict mapping symbol to quote data
+        """
+        if not self._connected:
+            raise RuntimeError("Not connected to OpenD")
+
+        if not symbols:
+            return {}
+
+        # Convert all symbols to Moomoo format
+        moomoo_symbols = [self._format_hk_symbol(s) for s in symbols]
+
+        # Batch request (max 400 per call)
+        batch_size = 400
+        all_quotes = {}
+
+        for i in range(0, len(moomoo_symbols), batch_size):
+            batch = moomoo_symbols[i:i + batch_size]
+            ret, data = self.quote_ctx.get_market_snapshot(batch)
+
+            if ret != RET_OK:
+                logger.error(f"Failed to get batch quotes: {data}")
+                continue
+
+            if data.empty:
+                continue
+
+            # Process each row
+            for _, row in data.iterrows():
+                moomoo_symbol = str(row.get("code", ""))
+                symbol = self._parse_hk_symbol(moomoo_symbol)
+
+                all_quotes[symbol] = {
+                    "symbol": symbol,
+                    "moomoo_symbol": moomoo_symbol,
+                    "last_price": float(row.get("last_price", 0)),
+                    "open_price": float(row.get("open_price", 0)),
+                    "high_price": float(row.get("high_price", 0)),
+                    "low_price": float(row.get("low_price", 0)),
+                    "prev_close": float(row.get("prev_close_price", 0)),
+                    "volume": int(row.get("volume", 0)),
+                    "turnover": float(row.get("turnover", 0)),
+                    "bid_price": float(row.get("bid_price", 0)),
+                    "ask_price": float(row.get("ask_price", 0)),
+                    "bid_vol": int(row.get("bid_vol", 0)),
+                    "ask_vol": int(row.get("ask_vol", 0)),
+                    "update_time": str(row.get("update_time", "")),
+                    "change_pct": float(row.get("price_spread", 0)),  # % change
+                }
+
+        logger.info(f"Fetched {len(all_quotes)} quotes in batch")
+        return all_quotes
 
     def get_portfolio(self) -> dict:
         """Get account portfolio summary.

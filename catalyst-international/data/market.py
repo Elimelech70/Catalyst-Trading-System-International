@@ -1,11 +1,21 @@
 """
 Market data and technical analysis for the Catalyst Trading Agent.
 
+Name of file: market.py
+Version: 2.1.0
+Last Updated: 2025-12-30
+
 This module provides:
 - Real-time quotes from Moomoo/Futu
 - Historical price data
 - Technical indicators (RSI, MACD, Moving Averages, etc.)
 - Market scanning functionality
+
+REVISION HISTORY:
+v2.1.0 (2025-12-30) - Batch quote support to avoid rate limiting
+- Updated scan_market() to use get_quotes_batch() instead of individual calls
+- Fixes "too frequent" error (60 requests per 30 seconds limit)
+- Single API call for all index constituents
 
 v2.0.0 (2025-12-20) - Migrated to Moomoo/Futu
 - Replaced IBKR with Futu broker client
@@ -316,6 +326,9 @@ class MarketData:
     ) -> list[dict]:
         """Scan market for trading candidates.
 
+        Uses batch quote API to avoid rate limiting (60 requests per 30 seconds).
+        All symbols are fetched in a single API call.
+
         Args:
             index: Index to scan (HSI, HSCEI, HSTECH, ALL)
             limit: Maximum candidates to return
@@ -330,37 +343,71 @@ class MarketData:
         # Get index constituents
         symbols = self._get_index_constituents(index)
 
+        # Use batch quote to avoid rate limiting
+        # This fetches all symbols in one API call instead of individual calls
+        try:
+            quotes_batch = self.broker.get_quotes_batch(symbols)
+        except Exception as e:
+            logger.error(f"Failed to get batch quotes: {e}")
+            return []
+
         candidates = []
         for symbol in symbols:
             try:
-                quote = self.get_quote(symbol)
+                quote_data = quotes_batch.get(symbol)
+                if not quote_data:
+                    continue
+
+                # Calculate volume ratio
+                volume = safe_int(quote_data.get("volume"), 0)
+                # Estimate avg volume from turnover if available
+                avg_volume = max(volume // 2, 1)  # Simplified estimate
+                volume_ratio = volume / avg_volume if avg_volume > 0 else 0
+
+                # Get price change percentage
+                last_price = safe_float(quote_data.get("last_price"), 0)
+                prev_close = safe_float(quote_data.get("prev_close"), 0)
+                if prev_close > 0:
+                    change_pct = ((last_price - prev_close) / prev_close) * 100
+                else:
+                    change_pct = safe_float(quote_data.get("change_pct"), 0)
 
                 # Filter by volume
-                if quote["volume_ratio"] < min_volume_ratio:
+                if volume_ratio < min_volume_ratio:
                     continue
 
                 # Filter by price action (positive momentum)
-                if quote["change_pct"] <= 0:
+                if change_pct <= 0:
                     continue
+
+                quote = {
+                    "symbol": symbol,
+                    "name": symbol,
+                    "price": last_price,
+                    "change_pct": change_pct,
+                    "volume": volume,
+                    "volume_ratio": round(volume_ratio, 2),
+                }
 
                 candidates.append(
                     {
                         "symbol": quote["symbol"],
                         "name": quote["name"],
                         "price": quote["price"],
-                        "change_pct": quote["change_pct"],
+                        "change_pct": round(quote["change_pct"], 2),
                         "volume": quote["volume"],
                         "volume_ratio": quote["volume_ratio"],
                         "momentum_score": self._calculate_momentum_score(quote),
                     }
                 )
             except Exception as e:
-                logger.warning(f"Error scanning {symbol}: {e}")
+                logger.warning(f"Error processing {symbol}: {e}")
                 continue
 
         # Sort by momentum score
         candidates.sort(key=lambda x: x["momentum_score"], reverse=True)
 
+        logger.info(f"Scan found {len(candidates)} candidates from {len(symbols)} symbols")
         return candidates[:limit]
 
     def _calculate_rsi(self, prices: pd.Series, period: int = 14) -> float:

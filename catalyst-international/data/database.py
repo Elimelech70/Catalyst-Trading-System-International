@@ -1,11 +1,22 @@
 """
 PostgreSQL database client for the Catalyst Trading Agent.
 
+Name of file: database.py
+Version: 1.1.0
+Last Updated: 2025-12-30
+
 This module handles all database operations including:
 - Agent cycle logging
 - Decision audit trail
 - Position tracking
 - Trade history
+
+REVISION HISTORY:
+v1.1.0 (2025-12-30) - Fix exchange column name
+- Changed 'exchange_code' to 'code' to match actual DB schema
+- Fixed all SQL queries referencing the exchanges table
+
+v1.0.0 (2025-12-20) - Initial implementation
 """
 
 import json
@@ -112,7 +123,7 @@ class DatabaseClient:
         with self.get_cursor() as cur:
             cur.execute(
                 """
-                SELECT * FROM exchanges WHERE exchange_code = %s AND is_active = TRUE
+                SELECT * FROM exchanges WHERE code = %s AND is_active = TRUE
                 """,
                 (exchange_code,),
             )
@@ -333,7 +344,7 @@ class DatabaseClient:
             cur.execute(
                 """
                 INSERT INTO securities (symbol, exchange_id)
-                SELECT %s, exchange_id FROM exchanges WHERE exchange_code = 'HKEX'
+                SELECT %s, exchange_id FROM exchanges WHERE code = 'HKEX'
                 ON CONFLICT (symbol) DO UPDATE SET symbol = EXCLUDED.symbol
                 RETURNING security_id
                 """,
