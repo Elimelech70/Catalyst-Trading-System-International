@@ -429,103 +429,13 @@ assets = alpaca_client.get_all_assets(
 
 ## 🌏 HKEX TRADING LESSONS (International System - Moomoo/Futu)
 
-These lessons are specific to trading HKEX via Moomoo/Futu OpenD:
+> **MIGRATED TO DATABASE:** Lessons 11-15 have been moved to the `claude_learnings` table in the consciousness database for cross-agent sharing.
+>
+> Query learnings: `SELECT * FROM claude_learnings WHERE agent_id = 'intl_claude' AND category = 'trading';`
 
-### Lesson 11: HKEX Tick Size Compliance
-**Problem**: HKEX has 11-tier tick size rules - incorrect prices rejected
-**Solution**: Always round prices to valid tick size before submission
-
-```python
-# brokers/futu.py - IMPLEMENTED
-def _round_to_tick(self, price: float) -> float:
-    """HKEX tick sizes vary by price tier"""
-    if price < 0.25:
-        tick = 0.001
-    elif price < 0.50:
-        tick = 0.005
-    elif price < 10.00:
-        tick = 0.01
-    elif price < 20.00:
-        tick = 0.02
-    elif price < 100.00:
-        tick = 0.05
-    # ... continues for 11 tiers up to 5.00 for prices > 5000
-    return round(round(price / tick) * tick, 3)
-```
-
-**Status**: ✅ Implemented in `brokers/futu.py`
-
-### Lesson 12: Moomoo/Futu Real-Time Data
-**Benefit**: Moomoo provides real-time HKEX data (unlike IBKR delayed data)
-**Impact**: Can use tighter stops and more responsive trading
-
-**Rules for Real-Time Trading:**
-```
-✅ Can use both MARKET and LIMIT orders
-✅ Standard stop loss rules apply (2-3%)
-✅ Volume-based signals are more reliable
-✅ Can trade near market open
-
-⚠️ Still prefer LIMIT orders for better fills
-⚠️ Monitor spread before trading illiquid stocks
-```
-
-**Status**: ✅ Real-time data included with Moomoo
-
-### Lesson 13: HK Symbol Format (Futu)
-**Format**: Futu uses "HK.00700" format internally
-**Solution**: Use `_format_hk_symbol()` to convert user input
-
-```python
-# brokers/futu.py - IMPLEMENTED
-def _format_hk_symbol(self, symbol: str) -> str:
-    """Format symbol for HKEX (e.g., '700' -> 'HK.00700')"""
-    num = symbol.lstrip('0') or '0'
-    return f"HK.{num.zfill(5)}"
-
-def _parse_hk_symbol(self, futu_symbol: str) -> str:
-    """Parse back to simple code (e.g., 'HK.00700' -> '700')"""
-    return futu_symbol.replace("HK.", "").lstrip("0") or "0"
-```
-
-**Status**: ✅ Implemented in `brokers/futu.py`
-
-### Lesson 14: Dollar-Based Position Sizing
-**Problem**: Share-based sizing creates uneven exposure (US system had 10x variance)
-**Solution**: Calculate target dollar value first, then convert to shares
-
-```python
-# Calculate dollar-based position size
-portfolio = client.get_portfolio()
-portfolio_value = portfolio["total_value"]
-target_pct = 0.18  # 18% of portfolio per position
-target_value = portfolio_value * target_pct
-
-# Convert to shares, round to lot size (100 for HKEX)
-quote = client.get_quote(symbol)
-current_price = quote["last_price"]
-quantity = int(target_value / current_price / 100) * 100
-
-# Example: HKD 1,000,000 portfolio, 18% target = HKD 180,000
-# Stock at HKD 380 → 180000 / 380 / 100 * 100 = 400 shares
-```
-
-**Status**: ⚠️ Agent must follow this pattern - not enforced in code
-
-### Lesson 15: Futu No Native Bracket Orders ⚠️
-**Problem**: Futu doesn't support parent-child linked orders like IBKR
-**Solution**: Use conditional orders OR agent-managed stop monitoring
-
-```python
-# Option A: Conditional orders (if supported)
-# Option B: Agent monitors and issues sell when SL/TP hit
-
-# Current implementation logs SL/TP for agent to manage
-if stop_loss or take_profit:
-    logger.info(f"SL={stop_loss}, TP={take_profit} - agent must monitor")
-```
-
-**Status**: ⚠️ Requires agent-managed stops or conditional order implementation
+Key implementations remain in `brokers/futu.py`:
+- `_round_to_tick()` - HKEX 11-tier tick size compliance
+- `_format_hk_symbol()` / `_parse_hk_symbol()` - HK.00700 format conversion
 
 ---
 
