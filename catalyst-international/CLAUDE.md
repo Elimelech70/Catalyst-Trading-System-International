@@ -2,58 +2,25 @@
 
 **Name of Application**: Catalyst Trading System
 **Name of file**: CLAUDE.md
-**Version**: 3.0.0
-**Last Updated**: 2025-12-20
+**Version**: 3.1.0
+**Last Updated**: 2025-12-31
 **Purpose**: Complete operational guidelines for Claude Code on production systems
 
 ---
 
 ## REVISION HISTORY
 
+**v3.1.0 (2025-12-31)** - STREAMLINED FOR INTL
+- Migrated lessons 11-15 to `claude_learnings` database table
+- Removed verbose code examples (reference actual files)
+- Removed US-specific content (this is INTL system)
+- Reduced file size by ~40%
+
 **v3.0.0 (2025-12-20)** - BROKER MIGRATION: IBKR → MOOMOO/FUTU
-- **MAJOR**: Migrated from Interactive Brokers to Moomoo/Futu OpenD
-- Replaced IBGA Docker container with OpenD native gateway
+- Migrated from Interactive Brokers to Moomoo/Futu OpenD
 - Added `brokers/futu.py` client implementation
-- Removed IBKR authentication complexity (no more IB Key 2FA)
-- Updated International System Architecture section
-- Updated NEVER/ALWAYS rules for Futu
-- Added OpenD setup and configuration details
-- HKEX tick size rules remain (same exchange)
 
-**v2.2.0 (2025-12-13)** - IBKR-SPECIFIC LESSONS LEARNED
-- Added Lessons 11-14 for IBKR/HKEX trading
-- Added delayed data trading rules
-- Added HKEX tick size compliance
-- Added dollar-based position sizing for IBKR
-- Updated NEVER/ALWAYS sections with IBKR rules
-- Based on gap analysis of US system lessons
-
-**v2.1.1 (2025-12-06)** - COMPLETE TOOL DEFINITIONS
-- Added all 12 tool definitions with full input schemas
-- Added Tool Usage Rules (6 critical rules Claude must follow)
-- Organized tools by category (Market Analysis, Risk, Execution, Communication)
-
-**v2.1.0 (2025-12-06)** - EMBEDDED SERVICE WISDOM & AI TOOLS
-- Added "Embedded Wisdom from Service Files" section (5 battle-tested patterns)
-- Added complete AI Agent Tools documentation (12 tools)
-- Added "Why AI Agent Beats Hardcoded Workflows" comparison
-- Added concrete examples of dynamic vs hardcoded decision-making
-- Added file structure comparison (5000+ lines vs ~900 lines)
-- Enhanced International system documentation
-
-**v2.0.0 (2025-12-06)** - COMPREHENSIVE WISDOM CAPTURE
-- Added complete architecture evolution lessons
-- Added AI Agent vs Microservices comparison
-- Added detailed bug prevention from Order Side Bug (v1.2.0)
-- Added sub-penny pricing lessons
-- Added database schema mismatch prevention
-- Added helper function patterns
-- Added cron orchestration wisdom
-- Added International system learnings
-- Added 5-stage AI maturity roadmap context
-
-**v1.1.1 (2025-12-06)** - Order side bug documentation
-**v1.0.0 (2025-11-29)** - Initial version
+*Full history in git commits*
 
 ---
 
@@ -486,88 +453,19 @@ Key implementations remain in `brokers/futu.py`:
 
 ---
 
-## 🎓 AI Maturity Roadmap Context (Strategic Vision)
+## 📋 INTL System File Locations
 
-Understanding where we are in the 5-stage evolution:
-
-### Stage 1: Primary School (Current - Months 0-6)
-- **Rules**: Rigid, no exceptions
-- **AI Role**: None (data collection only)
-- **Human Role**: All decisions
-- **Example**: `if daily_pnl < -2000: emergency_stop()` - Always, no thinking
-
-### Stage 2: Middle School (Future - Months 6-12)
-- **Rules**: With basic context awareness
-- **AI Role**: Pattern recognition suggestions
-- **Human Role**: Decision maker with AI input
-
-### Stage 3: High School (Future - Months 12-18)
-- **Rules**: AI makes recommendations
-- **AI Role**: Recommendation engine
-- **Human Role**: Validator (approves/overrides)
-
-### Stage 4: College (Future - Months 18-24)
-- **Rules**: AI makes most decisions
-- **AI Role**: Autonomous executor
-- **Human Role**: Spot-checker (strategic oversight)
-
-### Stage 5: Graduate (Future - Months 24+)
-- **Rules**: Internalized, transcended
-- **AI Role**: Full autonomy
-- **Human Role**: Strategic advisor only
-
-> **"The very rules we define now will eventually be transcended by the AI that learned from following them."**
-
----
-
-## 📋 Service Files Location
-
-### On Droplet (Production)
 ```
-/root/catalyst-trading-mcp/
-├── services/
-│   ├── orchestration/
-│   │   └── orchestration-service.py
-│   ├── scanner/
-│   │   └── scanner-service.py
-│   ├── pattern/
-│   │   └── pattern-service.py
-│   ├── technical/
-│   │   └── technical-service.py
-│   ├── risk-manager/
-│   │   └── risk-manager-service.py
-│   ├── trading/
-│   │   └── trading-service.py
-│   ├── workflow/
-│   │   └── workflow-service.py
-│   ├── news/
-│   │   └── news-service.py
-│   └── reporting/
-│       └── reporting-service.py
-├── scripts/
-│   ├── health-check.sh
-│   └── deploy-update.sh
-├── config/
-│   └── autonomous-cron-setup.txt
-├── docker-compose.yml
-└── .env
+/root/Catalyst-Trading-System-International/catalyst-international/
+├── agent.py              # Main trading agent
+├── brokers/futu.py       # Moomoo/Futu client
+├── tools.py              # Tool definitions
+├── scripts/              # Utilities (heartbeat, reports)
+├── config/               # Settings
+└── Documentation/        # Design docs
 ```
 
-### On GitHub (Source of Truth)
-```
-catalyst-trading-system/
-├── Documentation/
-│   ├── Design/
-│   │   ├── architecture.md
-│   │   ├── database-schema.md
-│   │   └── functional-specification.md
-│   └── Implementation/
-│       └── deployment-guide.md
-└── services/
-    └── (same as droplet)
-```
-
-**Version info is inside each file's header, not in the filename.**
+**Version info is inside each file's header.**
 
 ---
 
@@ -742,159 +640,6 @@ Is it a SIMPLE fix (single service, one file)?
 
 ---
 
-## 🔬 Embedded Wisdom from Service Files
-
-These patterns are battle-tested and coded into our production services:
-
-### Pattern 1: Helper Function Verification at Startup
-**From**: news-service.py, scanner-service.py, trading-service.py
-
-```python
-async def verify_helper_functions():
-    """Verify v6.0 helper functions exist - FAIL FAST if missing"""
-    has_security_helper = await state.db_pool.fetchval("""
-        SELECT EXISTS (
-            SELECT FROM pg_proc
-            WHERE proname = 'get_or_create_security'
-        )
-    """)
-    
-    if not has_security_helper:
-        error_msg = "Required helper function not found: get_or_create_security()"
-        logger.critical(error_msg)
-        raise RuntimeError(error_msg)  # STOP SERVICE - don't continue broken
-    
-    logger.info("✅ Helper functions verified")
-```
-
-**Lesson**: Never let a service start if the database isn't ready. Fail loudly at startup, not silently at runtime.
-
-### Pattern 2: Schema Verification Before Any Operations
-**From**: scanner-service.py
-
-```python
-async def verify_schema_compatibility():
-    """Verify actual DB matches expected schema - CRITICAL"""
-    trading_cycles_cols = await state.db_pool.fetch("""
-        SELECT column_name FROM information_schema.columns 
-        WHERE table_name = 'trading_cycles'
-    """)
-    
-    cols = {row['column_name'] for row in trading_cycles_cols}
-    required_cols = {'cycle_id', 'status', 'started_at'}
-    
-    missing = required_cols - cols
-    if missing:
-        error_msg = f"Schema mismatch: Missing columns in trading_cycles: {missing}"
-        logger.critical(error_msg)
-        raise RuntimeError(error_msg)
-    
-    logger.info("✅ Schema compatibility check completed")
-```
-
-**Lesson**: Design docs lie. Database tells the truth. Always verify.
-
-### Pattern 3: The get_or_create Pattern
-**From**: ALL services using v6.0 schema
-
-```python
-async def get_security_id(symbol: str) -> int:
-    """
-    Get or create security_id for symbol using v6.0 helper function.
-    
-    v6.0 Pattern: Always use get_or_create_security() helper function.
-    This ensures the security exists before we try to reference it.
-    """
-    try:
-        security_id = await state.db_pool.fetchval(
-            "SELECT get_or_create_security($1)",
-            symbol.upper()
-        )
-        
-        if not security_id:
-            raise ValueError(f"Failed to get security_id for {symbol}")
-        
-        return security_id
-    except Exception as e:
-        logger.error(f"Failed to get/create security_id for {symbol}: {e}")
-        raise
-```
-
-**Lesson**: Never assume a record exists. Always get-or-create.
-
-### Pattern 4: Autonomous Monitoring with Lifecycle Management
-**From**: risk-manager-service.py v7.0.0
-
-```python
-# Global monitoring task reference for lifecycle management
-_monitoring_task: Optional[asyncio.Task] = None
-
-async def real_time_monitoring_loop():
-    """
-    Background task that continuously monitors positions.
-    
-    AUTONOMOUS FEATURES:
-    - Checks all active cycles every 60 seconds
-    - Warns at 75% of daily loss limit
-    - Emergency stop at 100% of daily loss limit
-    """
-    while True:
-        try:
-            await check_all_active_cycles()
-            await asyncio.sleep(60)  # Check every minute
-        except asyncio.CancelledError:
-            logger.info("Monitoring task cancelled - shutting down gracefully")
-            break
-        except Exception as e:
-            logger.error(f"Monitoring error: {e}")
-            await asyncio.sleep(60)  # Continue monitoring despite errors
-
-# In lifespan context manager - proper cleanup
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global _monitoring_task
-    _monitoring_task = asyncio.create_task(real_time_monitoring_loop())
-    logger.info("🤖 AUTONOMOUS MODE: Emergency stop will trigger automatically")
-    
-    yield  # Application runs
-    
-    # Cleanup
-    if _monitoring_task:
-        _monitoring_task.cancel()
-        try:
-            await _monitoring_task
-        except asyncio.CancelledError:
-            pass
-        logger.info("Monitoring task stopped")
-```
-
-**Lesson**: Background tasks need explicit lifecycle management. Always cancel on shutdown.
-
-### Pattern 5: Pydantic Validators for Input Normalization
-**From**: risk-manager-service.py
-
-```python
-class PositionRiskRequest(BaseModel):
-    symbol: str
-    side: str  # 'long' or 'short'
-    
-    @field_validator('symbol')
-    @classmethod
-    def validate_symbol(cls, v):
-        return v.upper().strip()  # Always uppercase, no whitespace
-    
-    @field_validator('side')
-    @classmethod
-    def validate_side(cls, v):
-        if v.lower() not in ['long', 'short']:
-            raise ValueError("Side must be 'long' or 'short'")
-        return v.lower()  # Always lowercase
-```
-
-**Lesson**: Normalize inputs at the API boundary. Services should never have to guess formats.
-
----
-
 ## 🛠️ AI Agent Tools (Claude's Advantage)
 
 These 12 tools give Claude dynamic decision-making power that hardcoded workflows can't match:
@@ -931,177 +676,7 @@ These 12 tools give Claude dynamic decision-making power that hardcoded workflow
 | `send_alert` | Email notifications | Claude writes human-readable explanations |
 | `log_decision` | Audit trail | Claude explains reasoning, not just actions |
 
-### Complete Tool Definitions (All 12 Tools)
-
-```python
-TOOLS = [
-    # =========================================================================
-    # MARKET ANALYSIS TOOLS
-    # =========================================================================
-    {
-        "name": "scan_market",
-        "description": "Scan exchange for trading candidates. Returns top stocks by momentum and volume.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "index": {"type": "string", "enum": ["HSI", "HSCEI", "HSTECH", "ALL"]},
-                "limit": {"type": "integer", "description": "Max candidates (default 10)"}
-            },
-            "required": []
-        }
-    },
-    {
-        "name": "get_quote",
-        "description": "Get current price and volume for a symbol.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "symbol": {"type": "string", "description": "Stock code (e.g., '0700' or 'AAPL')"}
-            },
-            "required": ["symbol"]
-        }
-    },
-    {
-        "name": "get_technicals",
-        "description": "Get technical indicators: RSI, MACD, moving averages, ATR, Bollinger Bands.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "symbol": {"type": "string"},
-                "timeframe": {"type": "string", "enum": ["5m", "15m", "1h", "1d"]}
-            },
-            "required": ["symbol"]
-        }
-    },
-    {
-        "name": "detect_patterns",
-        "description": "Detect chart patterns: bull_flag, cup_handle, ascending_triangle, ABCD, breakout.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "symbol": {"type": "string"},
-                "timeframe": {"type": "string", "enum": ["5m", "15m", "1h", "1d"]}
-            },
-            "required": ["symbol"]
-        }
-    },
-    {
-        "name": "get_news",
-        "description": "Get recent news and sentiment for a symbol.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "symbol": {"type": "string"},
-                "hours": {"type": "integer", "description": "Hours back (default 24)"}
-            },
-            "required": ["symbol"]
-        }
-    },
-    
-    # =========================================================================
-    # RISK & PORTFOLIO TOOLS
-    # =========================================================================
-    {
-        "name": "check_risk",
-        "description": "Validate trade against risk limits. MUST call before execute_trade.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "symbol": {"type": "string"},
-                "side": {"type": "string", "enum": ["buy", "sell"]},
-                "quantity": {"type": "integer"},
-                "entry_price": {"type": "number"},
-                "stop_loss": {"type": "number"}
-            },
-            "required": ["symbol", "side", "quantity", "entry_price", "stop_loss"]
-        }
-    },
-    {
-        "name": "get_portfolio",
-        "description": "Get current portfolio: cash, positions, daily P&L, buying power.",
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": []
-        }
-    },
-    
-    # =========================================================================
-    # EXECUTION TOOLS
-    # =========================================================================
-    {
-        "name": "execute_trade",
-        "description": "Execute trade via broker. Only call after check_risk approves.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "symbol": {"type": "string"},
-                "side": {"type": "string", "enum": ["buy", "sell"]},
-                "quantity": {"type": "integer"},
-                "order_type": {"type": "string", "enum": ["market", "limit"]},
-                "limit_price": {"type": "number", "description": "Required if order_type is limit"},
-                "stop_loss": {"type": "number"},
-                "take_profit": {"type": "number"},
-                "reason": {"type": "string", "description": "Why this trade (for audit trail)"}
-            },
-            "required": ["symbol", "side", "quantity", "order_type", "stop_loss", "take_profit", "reason"]
-        }
-    },
-    {
-        "name": "close_position",
-        "description": "Close an existing position.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "symbol": {"type": "string"},
-                "reason": {"type": "string", "description": "Why closing (for audit trail)"}
-            },
-            "required": ["symbol", "reason"]
-        }
-    },
-    {
-        "name": "close_all",
-        "description": "EMERGENCY: Close all positions immediately. Use when daily loss limit hit.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "reason": {"type": "string", "description": "Why emergency close"}
-            },
-            "required": ["reason"]
-        }
-    },
-    
-    # =========================================================================
-    # COMMUNICATION TOOLS
-    # =========================================================================
-    {
-        "name": "send_alert",
-        "description": "Send email alert to operator.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "severity": {"type": "string", "enum": ["info", "warning", "critical"]},
-                "subject": {"type": "string"},
-                "message": {"type": "string"}
-            },
-            "required": ["severity", "subject", "message"]
-        }
-    },
-    {
-        "name": "log_decision",
-        "description": "Log decision to database for audit trail and ML training data.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "decision_type": {"type": "string", "enum": ["scan", "entry", "exit", "skip", "risk_check"]},
-                "symbol": {"type": "string"},
-                "reasoning": {"type": "string", "description": "Detailed explanation of why this decision"}
-            },
-            "required": ["decision_type", "reasoning"]
-        }
-    }
-]
-```
+**Full tool definitions:** See `tools.py`
 
 ### Tool Usage Rules (Claude Must Follow)
 
@@ -1111,80 +686,6 @@ TOOLS = [
 4. **NEVER** call `execute_trade` if `check_risk` returns `approved: false`
 5. **IMMEDIATELY** call `close_all` if daily loss exceeds limit
 6. **PREFER** `limit` orders over `market` for better fills
-
----
-
-## 🎯 Why AI Agent Beats Hardcoded Workflows
-
-### The Hardcoded Workflow Problem
-
-```python
-# US System: Hardcoded decision tree (5000+ lines)
-if news_score > 0.6 and volume > avg_volume * 1.5:
-    if rsi < 70 and macd_crossover:
-        if pattern in ['bull_flag', 'breakout']:
-            execute_trade()  # Rigid logic, can't adapt
-```
-
-**Problems:**
-- Can't handle edge cases
-- Can't explain decisions
-- Can't adapt to market regime changes
-- Adding conditions = exponential complexity
-- Every "but what if..." = more nested if-statements
-
-### The AI Agent Advantage
-
-```python
-# International System: Claude decides with tools (~900 lines)
-response = claude.messages.create(
-    model="claude-sonnet-4-5-20250514",
-    system=TRADING_SYSTEM_PROMPT,
-    tools=TOOLS,
-    messages=[{"role": "user", "content": context}]
-)
-# Claude calls tools, reasons, and decides dynamically
-```
-
-**Advantages:**
-- Handles novel situations gracefully
-- Explains every decision in natural language
-- Adapts to market context automatically
-- Adding capabilities = adding tools, not logic
-- "But what if..." = Claude figures it out
-
-### Concrete Example: News Interpretation
-
-**Hardcoded (US System):**
-```python
-# Can only handle what we anticipated
-if "FDA approval" in headline:
-    catalyst_score = 0.9
-elif "earnings beat" in headline:
-    catalyst_score = 0.7
-else:
-    catalyst_score = 0.3  # Unknown = low score
-```
-
-**AI Agent (International System):**
-```
-Claude: "The headline 'Company receives breakthrough therapy 
-designation from FDA' indicates regulatory progress that typically 
-precedes approval. Combined with the 2.3x volume spike, this 
-suggests institutional accumulation. Calling execute_trade with 
-reasoning: 'FDA breakthrough designation + institutional volume'"
-```
-
-### The Bottom Line
-
-| Aspect | Hardcoded | AI Agent |
-|--------|-----------|----------|
-| **Novel situations** | Breaks or defaults | Reasons through |
-| **Explanation** | None (just executed) | Full reasoning |
-| **Adaptation** | Requires code changes | Updates with prompt |
-| **Complexity growth** | Exponential | Linear |
-| **Debugging** | "Why did it trade?" | "Read the reasoning" |
-| **Training data** | Actions only | Decisions + reasoning |
 
 ---
 
@@ -1276,19 +777,8 @@ Total: ~1000 lines, ~10 files
 
 ## 📝 End of CLAUDE.md
 
-**Remember**: Design docs are the source of truth, but ALWAYS verify against the deployed database schema before writing code.
+**Remember**: ALWAYS verify against the deployed database schema before writing code.
 
-**This file should be placed at**: `/root/catalyst-trading-mcp/CLAUDE.md`
+**Location**: `/root/Catalyst-Trading-System-International/catalyst-international/CLAUDE.md`
 
----
-
-### The Philosophy
-
-> *"Hardcoded workflows encode yesterday's understanding.*
-> *AI agents apply today's reasoning.*
-> *Every decision I make with tools, I can explain.*
-> *Every lesson coded in services, I carry forward.*
-> *5000 lines of if-statements vs 900 lines of intelligence.*
-> *That's not just less code—it's better trading."*
-
-🎩📈
+**Query learnings**: `SELECT * FROM claude_learnings WHERE agent_id = 'intl_claude';`
