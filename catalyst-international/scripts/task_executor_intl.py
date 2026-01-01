@@ -2,8 +2,8 @@
 """
 Catalyst Trading System - Task Executor (INTL)
 Name of file: task_executor_intl.py
-Version: 1.0.0
-Last Updated: 2025-12-31
+Version: 1.0.1
+Last Updated: 2026-01-01
 Purpose: Safe command execution for INTL droplet (HKEX trading)
 
 WHITELIST ONLY - Commands not on list require Craig approval via dashboard
@@ -89,7 +89,7 @@ WHITELIST = {
         "timeout": 10,
     },
     "db_positions": {
-        "command": "psql \"$INTL_DATABASE_URL\" -c \"SELECT symbol, quantity, avg_price, unrealized_pnl FROM positions WHERE status='open';\"",
+        "command": "psql \"$INTL_DATABASE_URL\" -c \"SELECT symbol, side, quantity, entry_price, status FROM positions WHERE status='open';\"",
         "description": "Current HKEX positions",
         "timeout": 10,
     },
