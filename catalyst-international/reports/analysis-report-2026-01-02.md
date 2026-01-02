@@ -99,9 +99,17 @@ Symbol   | Closest Pattern | Gap to Qualify
 
 | Source | Type | API Key Required | Status |
 |--------|------|------------------|--------|
-| NewsAPI | REST API | Yes (NEWSAPI_KEY) | Not configured |
+| NewsAPI | REST API | Yes (NEWSAPI_KEY) | **NOW CONFIGURED** |
 | SCMP Business | RSS Feed | No | Active |
 | HKEJ | RSS Feed | No | Active |
+
+**UPDATE 2026-01-02 16:30 HKT**: NewsAPI key added to `.env`. API returns results for queries like "Tencent", "Alibaba stock", "China tech stocks".
+
+**Additional API Keys Now Configured**:
+- `NEWSAPI_KEY` - NewsAPI.org
+- `ALPHA_VANTAGE_API_KEY` - Alpha Vantage
+- `FINNHUB_API_KEY` - Finnhub
+- `TWELVE_DATA_API_KEY` - Twelve Data
 
 ### 2.2 Sentiment Keywords
 
