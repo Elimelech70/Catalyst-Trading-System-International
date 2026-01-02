@@ -1,11 +1,16 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: moomoo.py
-Version: 1.1.0
-Last Updated: 2025-12-30
+Version: 1.2.0
+Last Updated: 2026-01-02
 Purpose: Moomoo client for HKEX trading via OpenD gateway
 
 REVISION HISTORY:
+v1.2.0 (2026-01-02) - Add historical data support
+- Added get_historical_data() for OHLCV candlestick data
+- Uses request_history_kline API with KLType mapping
+- Fixes get_technicals and detect_patterns tools
+
 v1.1.0 (2025-12-30) - Add batch quote support
 - Added get_quotes_batch() for multiple symbols in one API call
 - Fixes rate limiting issue (max 60 requests per 30 seconds)
@@ -53,6 +58,7 @@ from moomoo import (
     RET_OK,
     ModifyOrderOp,
     TrdEnv,
+    KLType,
 )
 
 logger = logging.getLogger(__name__)
@@ -645,6 +651,93 @@ class MoomooClient:
             return {"success": False, "error": str(data)}
 
         return {"success": True, "order_id": order_id, "message": "Order cancelled"}
+
+    def get_historical_data(
+        self,
+        symbol: str,
+        duration: str = "5 D",
+        bar_size: str = "15 mins",
+    ) -> List[dict]:
+        """Get historical OHLCV data for a symbol.
+
+        Args:
+            symbol: Stock code (e.g., "700" or "00700")
+            duration: Duration string (e.g., "5 D", "30 D") - used to calculate start date
+            bar_size: Bar size string (e.g., "5 mins", "15 mins", "1 hour", "1 day")
+
+        Returns:
+            List of dicts with date, open, high, low, close, volume
+        """
+        if not self._connected:
+            raise RuntimeError("Not connected to OpenD")
+
+        # Map bar_size to KLType
+        kl_type_map = {
+            "1 min": KLType.K_1M,
+            "3 mins": KLType.K_3M,
+            "5 mins": KLType.K_5M,
+            "15 mins": KLType.K_15M,
+            "30 mins": KLType.K_30M,
+            "1 hour": KLType.K_60M,
+            "60 mins": KLType.K_60M,
+            "1 day": KLType.K_DAY,
+            "1 week": KLType.K_WEEK,
+            "1 month": KLType.K_MON,
+        }
+        kl_type = kl_type_map.get(bar_size, KLType.K_15M)
+
+        # Parse duration to calculate max_count
+        # Format: "X D" for days, estimate bars needed
+        try:
+            parts = duration.strip().split()
+            num = int(parts[0])
+            unit = parts[1].upper() if len(parts) > 1 else "D"
+
+            # Estimate bars based on timeframe
+            if kl_type in [KLType.K_1M, KLType.K_3M, KLType.K_5M, KLType.K_15M, KLType.K_30M, KLType.K_60M]:
+                # Intraday: ~6.5 trading hours per day
+                minutes_per_bar = {
+                    KLType.K_1M: 1, KLType.K_3M: 3, KLType.K_5M: 5,
+                    KLType.K_15M: 15, KLType.K_30M: 30, KLType.K_60M: 60
+                }
+                bars_per_day = (6.5 * 60) / minutes_per_bar.get(kl_type, 15)
+                max_count = int(num * bars_per_day) + 50  # Add buffer
+            else:
+                # Daily/weekly: just use days
+                max_count = num + 10
+        except (ValueError, IndexError):
+            max_count = 200
+
+        max_count = min(max_count, 1000)  # API limit
+
+        # Format symbol for Moomoo
+        moomoo_symbol = self._format_hk_symbol(symbol)
+
+        # Fetch historical data
+        ret, data, _ = self.quote_ctx.request_history_kline(
+            code=moomoo_symbol,
+            ktype=kl_type,
+            max_count=max_count,
+        )
+
+        if ret != RET_OK:
+            logger.error(f"Failed to get historical data for {symbol}: {data}")
+            raise RuntimeError(f"Failed to get historical data: {data}")
+
+        # Convert DataFrame to list of dicts
+        result = []
+        for _, row in data.iterrows():
+            result.append({
+                "date": row.get("time_key", ""),
+                "open": float(row.get("open", 0)),
+                "high": float(row.get("high", 0)),
+                "low": float(row.get("low", 0)),
+                "close": float(row.get("close", 0)),
+                "volume": int(row.get("volume", 0)),
+            })
+
+        logger.info(f"Fetched {len(result)} bars for {symbol} ({bar_size})")
+        return result
 
 
 # Module-level client instance for convenience
