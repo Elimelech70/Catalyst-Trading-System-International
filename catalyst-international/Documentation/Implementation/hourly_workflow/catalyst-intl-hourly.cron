@@ -1,0 +1,150 @@
+# ============================================================================
+# CATALYST INTERNATIONAL TRADING SYSTEM - HOURLY CRON SCHEDULE
+# ============================================================================
+#
+# Name of Application: Catalyst Trading System
+# Name of file: catalyst-intl-hourly.cron
+# Version: 2.0.0
+# Last Updated: 2026-01-06
+# Purpose: Run full trading workflow every hour during market hours
+#
+# REVISION HISTORY:
+# v2.0.0 (2026-01-06) - Hourly full workflow
+#   - Changed from 30-min to hourly execution
+#   - Full scan → analyze → trade → monitor every hour
+#   - Position monitoring runs continuously after trades
+#
+# v1.0.0 (2026-01-05) - Initial deployment
+#   - 30-minute intervals during market hours
+#
+# ============================================================================
+# TIMEZONE REFERENCE
+# ============================================================================
+#
+# Server: UTC
+# Market: HKT (UTC+8)
+#
+# HKT       UTC
+# ─────────────────
+# 09:00     01:00
+# 10:00     02:00
+# 11:00     03:00
+# 12:00     04:00  (lunch break starts)
+# 13:00     05:00  (afternoon session)
+# 14:00     06:00
+# 15:00     07:00
+# 16:00     08:00  (market close)
+#
+# ============================================================================
+# MARKET HOURS (HKEX)
+# ============================================================================
+#
+# Morning Session:  09:30 - 12:00 HKT
+# Lunch Break:      12:00 - 13:00 HKT (no trading)
+# Afternoon Session: 13:00 - 16:00 HKT
+#
+# ============================================================================
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+
+# Working directory
+CATALYST_DIR=/root/Catalyst-Trading-System-International/catalyst-international
+VENV_PYTHON=/root/Catalyst-Trading-System-International/catalyst-international/venv/bin/python3
+LOG_DIR=/root/Catalyst-Trading-System-International/catalyst-international/logs
+
+# ============================================================================
+# PRE-MARKET SCAN (09:00 HKT = 01:00 UTC)
+# ============================================================================
+# Run scan mode 30 minutes before market open to identify opportunities
+# This gives time to analyze candidates before trading begins
+
+0 1 * * 1-5 cd $CATALYST_DIR && $VENV_PYTHON unified_agent.py --mode scan >> $LOG_DIR/cron.log 2>&1
+
+# ============================================================================
+# MORNING SESSION - HOURLY FULL WORKFLOW
+# ============================================================================
+# 09:30 HKT (01:30 UTC) - Market opens, first trading cycle
+# 10:00 HKT (02:00 UTC) - Second trading cycle
+# 11:00 HKT (03:00 UTC) - Third trading cycle
+#
+# Each cycle runs the FULL workflow:
+#   1. Check portfolio
+#   2. Scan market for opportunities
+#   3. Analyze candidates (quote, technicals, patterns, news)
+#   4. Execute trades if criteria met
+#   5. Position monitor starts automatically for new positions
+#   6. Log decisions
+
+30 1 * * 1-5 cd $CATALYST_DIR && $VENV_PYTHON unified_agent.py --mode trade >> $LOG_DIR/cron.log 2>&1
+0 2 * * 1-5 cd $CATALYST_DIR && $VENV_PYTHON unified_agent.py --mode trade >> $LOG_DIR/cron.log 2>&1
+0 3 * * 1-5 cd $CATALYST_DIR && $VENV_PYTHON unified_agent.py --mode trade >> $LOG_DIR/cron.log 2>&1
+
+# ============================================================================
+# LUNCH BREAK CLOSE (12:00 HKT = 04:00 UTC)
+# ============================================================================
+# Close all positions before lunch break (HKEX closes 12:00-13:00)
+# Risk management: don't hold through lunch uncertainty
+
+0 4 * * 1-5 cd $CATALYST_DIR && $VENV_PYTHON unified_agent.py --mode close >> $LOG_DIR/cron.log 2>&1
+
+# ============================================================================
+# AFTERNOON SESSION - HOURLY FULL WORKFLOW
+# ============================================================================
+# 13:00 HKT (05:00 UTC) - Afternoon session opens
+# 14:00 HKT (06:00 UTC) - Second afternoon cycle
+# 15:00 HKT (07:00 UTC) - Third afternoon cycle
+#
+# Same full workflow as morning session
+
+0 5 * * 1-5 cd $CATALYST_DIR && $VENV_PYTHON unified_agent.py --mode trade >> $LOG_DIR/cron.log 2>&1
+0 6 * * 1-5 cd $CATALYST_DIR && $VENV_PYTHON unified_agent.py --mode trade >> $LOG_DIR/cron.log 2>&1
+0 7 * * 1-5 cd $CATALYST_DIR && $VENV_PYTHON unified_agent.py --mode trade >> $LOG_DIR/cron.log 2>&1
+
+# ============================================================================
+# END OF DAY CLOSE (16:00 HKT = 08:00 UTC)
+# ============================================================================
+# Close all remaining positions at market close
+# Generate daily report and summary
+
+0 8 * * 1-5 cd $CATALYST_DIR && $VENV_PYTHON unified_agent.py --mode close >> $LOG_DIR/cron.log 2>&1
+
+# ============================================================================
+# OFF-HOURS HEARTBEAT (Optional - consciousness only)
+# ============================================================================
+# Process messages, update status, no trading
+# Runs every 2 hours outside market hours to stay responsive
+
+# Evening/night heartbeats (16:00-09:00 HKT = 08:00-01:00 UTC)
+0 9,11,13,15,17,19,21,23 * * 1-5 cd $CATALYST_DIR && $VENV_PYTHON unified_agent.py --mode heartbeat >> $LOG_DIR/cron.log 2>&1
+
+# Weekend heartbeats (every 4 hours)
+0 0,4,8,12,16,20 * * 0,6 cd $CATALYST_DIR && $VENV_PYTHON unified_agent.py --mode heartbeat >> $LOG_DIR/cron.log 2>&1
+
+# ============================================================================
+# LOG ROTATION (Daily at midnight UTC)
+# ============================================================================
+0 0 * * * find $LOG_DIR -name "*.log" -mtime +7 -delete 2>/dev/null
+
+# ============================================================================
+# SCHEDULE SUMMARY
+# ============================================================================
+#
+# TRADING DAYS (Monday-Friday):
+#
+# UTC   HKT   Mode      Action
+# ────────────────────────────────────────────────────────────────
+# 01:00 09:00 scan      Pre-market scan
+# 01:30 09:30 trade     Market opens - FULL WORKFLOW #1
+# 02:00 10:00 trade     FULL WORKFLOW #2
+# 03:00 11:00 trade     FULL WORKFLOW #3
+# 04:00 12:00 close     Lunch break close
+# 05:00 13:00 trade     Afternoon opens - FULL WORKFLOW #4
+# 06:00 14:00 trade     FULL WORKFLOW #5
+# 07:00 15:00 trade     FULL WORKFLOW #6
+# 08:00 16:00 close     EOD close
+#
+# Total: 6 full trading cycles per day
+#
+# ============================================================================
