@@ -233,12 +233,28 @@ class ToolExecutor:
         stop_loss = inputs["stop_loss"]
         take_profit = inputs["take_profit"]
 
+        # Get portfolio info for risk validation
+        portfolio = self.broker.get_portfolio()
+        if hasattr(portfolio, '__dict__'):
+            portfolio = vars(portfolio)
+
+        portfolio_value = portfolio.get("equity") or portfolio.get("total_assets", 500000)
+        cash_available = portfolio.get("cash", 0)
+        current_positions = portfolio.get("position_count", 0)
+        daily_pnl_pct = portfolio.get("daily_pnl_pct", 0) / 100 if portfolio.get("daily_pnl_pct", 0) > 1 else portfolio.get("daily_pnl_pct", 0)
+
         # Validate through safety module
         result = validate_trade_request(
             symbol=symbol,
             side=side,
             quantity=quantity,
-            price=entry_price,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            portfolio_value=portfolio_value,
+            cash_available=cash_available,
+            current_positions=current_positions,
+            daily_pnl_pct=daily_pnl_pct,
         )
 
         # Calculate risk/reward
@@ -252,9 +268,13 @@ class ToolExecutor:
         return {
             "approved": result.get("approved", False),
             "reason": result.get("reason", ""),
+            "warnings": result.get("warnings", []),
             "risk_reward_ratio": round(risk_reward, 2),
             "position_size_hkd": quantity * entry_price if entry_price else 0,
             "max_loss_hkd": quantity * abs(entry_price - stop_loss) if stop_loss else 0,
+            "portfolio_value": portfolio_value,
+            "cash_available": cash_available,
+            "current_positions": current_positions,
             "timestamp": datetime.now(HK_TZ).isoformat(),
         }
 
