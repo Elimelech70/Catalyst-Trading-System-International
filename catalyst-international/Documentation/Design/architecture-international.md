@@ -2,39 +2,37 @@
 
 **Name of Application:** Catalyst Trading System International  
 **Name of File:** architecture-international.md  
-**Version:** 5.1.0  
-**Last Updated:** 2025-12-29  
+**Version:** 5.2.0  
+**Last Updated:** 2026-01-06  
 **Target Exchange:** Hong Kong Stock Exchange (HKEX)  
 **Broker:** Moomoo via OpenD Gateway  
 **Architecture:** AI Agent Pattern (Simple Droplet + Claude API + OpenD)  
-**Status:** Production Ready
+**Status:** Production - First Autonomous Trade Executed
 
 ---
 
 ## REVISION HISTORY
 
+**v5.2.0 (2026-01-06)** - FIRST AUTONOMOUS TRADE MILESTONE
+- **MILESTONE**: First autonomous trade executed (BUY 1024 Kuaishou)
+- Added patterns.py v1.1.0 with relaxed detection (near_breakout, momentum_continuation)
+- Fixed 4 critical bugs in tool_executor.py:
+  - OrderResult dataclass access (not subscriptable)
+  - has_position method (doesn't exist, use get_positions)
+  - AlertSender callable check (has .send() method)
+  - Portfolio KeyError (use .get() with defaults)
+- Fixed moomoo.py get_portfolio() missing fields (positions, equity, position_count, daily_pnl_pct)
+- Fixed market.py quote field mapping (last_price not last)
+- Portfolio: 4 positions, +HKD 20,625 unrealized P&L
+
 **v5.1.0 (2025-12-29)** - MOOMOO BRANDING CLEANUP
-- **BREAKING**: Removed all Futu references - use Moomoo terminology only
-- **BREAKING**: Removed Docker approach - OpenD runs as native binary
+- Removed all Futu references - use Moomoo terminology only
 - Fixed Python SDK: `moomoo-api` (not `futu-api`)
 - Fixed imports: `from moomoo import ...` (not `from futu import ...`)
-- Fixed config format: `<moomoo_opend>` root element
-- Fixed SecurityFirm: `MOOMOOAU` for Australian accounts
-- Download OpenD from: https://www.moomoo.com/download/OpenAPI
-- Official docs: https://openapi.moomoo.com/moomoo-api-doc/en/intro/intro.html
 
 **v5.0.0 (2025-12-20)** - BROKER MIGRATION: IBKR → MOOMOO
 - Migrated from Interactive Brokers to Moomoo
-- Replaced IBGA Docker container with OpenD
-- No more IB Key 2FA issues
-- Real-time market data included
-
-**v4.2.0 (2025-12-13)** - Cron Scheduling Configured  
-**v4.1.0 (2025-12-11)** - Production Ready Updates  
-**v4.0.0 (2025-12-10)** - IBGA Socket API Integration  
-**v3.0.0 (2025-12-09)** - Deprecated  
-**v2.0.0 (2025-12-03)** - Simplified Architecture  
-**v1.0.0 (2025-12-03)** - Initial Agent Architecture
+- Replaced IBGA Docker container with OpenD native binary
 
 ---
 
@@ -44,25 +42,24 @@
 
 Minimal infrastructure with Moomoo OpenD (native binary):
 
-- **1 small droplet** ($6/month) - IP: 209.38.87.27
-- **1 Python script** (the agent)
+- **1 small droplet** ($6/month) - IP: 137.184.244.45
+- **1 Python agent** (agent.py v2.2.0)
 - **OpenD** (native binary gateway - NO Docker)
 - **Cron** (the trigger)
-- **Claude API** (the brain)
+- **Claude API** (the brain - Sonnet model)
 - **Moomoo API** (the broker via `moomoo-api` Python SDK)
-- **PostgreSQL** (own DO Managed DB)
+- **PostgreSQL** (DigitalOcean Managed DB)
 
-### 1.2 Why Moomoo (Migrated from IBKR Dec 2025)
+### 1.2 Current Portfolio Status (2026-01-06)
 
-| Aspect | IBKR (Old) | Moomoo (New) |
-|--------|------------|--------------|
-| **Gateway** | IBGA Docker + Java + VNC | OpenD native binary |
-| **Authentication** | IB Key 2FA (constant failures) | Password + unlock |
-| **Market Data** | 15-min delayed (without subscription) | Real-time included |
-| **Container deps** | Docker, Java 17, JavaFX | None (native Linux) |
-| **Debug method** | VNC into container | Simple log files |
-| **Reconnection** | Manual re-auth often | Auto-reconnect |
-| **API Type** | ib_async socket | moomoo-api socket |
+| Symbol | Stock | Shares | Entry | Current | P&L | P&L % |
+|--------|-------|--------|-------|---------|-----|-------|
+| 981 | SMIC | 2,500 | $70.55 | $76.95 | +$16,000 | +9.1% |
+| 2382 | Sunny Optical | 2,700 | $64.95 | $66.70 | +$4,725 | +2.7% |
+| 1810 | Xiaomi | 4,600 | $38.88 | $38.88 | $0 | 0% |
+| 1024 | Kuaishou | 2,000 | $76.35 | $76.30 | -$100 | -0.1% |
+
+**Total Unrealized P&L: +HKD 20,625 (+2.0%)**
 
 ### 1.3 Operational Schedule
 
@@ -71,399 +68,196 @@ Minimal infrastructure with Moomoo OpenD (native binary):
 | Morning | 09:30 HKT | 01:30 UTC | `30 1 * * 1-5` |
 | Afternoon | 13:00 HKT | 05:00 UTC | `0 5 * * 1-5` |
 
-**Cron Jobs:**
-```cron
-# Morning session start (09:30 HKT = 01:30 UTC)
-30 1 * * 1-5 cd /root/Catalyst-Trading-System-International/catalyst-international && ./venv/bin/python3 agent.py >> logs/cron.log 2>&1
+---
 
-# Afternoon session start (13:00 HKT = 05:00 UTC)
-0 5 * * 1-5 cd /root/Catalyst-Trading-System-International/catalyst-international && ./venv/bin/python3 agent.py >> logs/cron.log 2>&1
-```
+## 2. File Versions
 
-**HK Market Hours:**
-- Morning: 09:30 - 12:00 HKT
-- Lunch Break: 12:00 - 13:00 HKT (no trading)
-- Afternoon: 13:00 - 16:00 HKT
+### 2.1 Core Files
 
-### 1.4 Architecture Diagram
+| File | Version | Last Updated | Purpose |
+|------|---------|--------------|---------|
+| `agent.py` | 2.2.0 | 2026-01-02 | Main trading agent with tiered entry criteria |
+| `tool_executor.py` | 2.2.1 | 2026-01-06 | Tool routing with bug fixes |
+| `brokers/moomoo.py` | 1.2.1 | 2026-01-06 | Moomoo client with portfolio fixes |
+| `data/patterns.py` | 1.1.0 | 2026-01-06 | Relaxed pattern detection |
+| `data/market.py` | 2.1.1 | 2026-01-06 | Quote field mapping fixes |
+| `data/news.py` | 1.0.0 | 2025-12-06 | News and sentiment |
+| `tools.py` | 1.0.0 | 2025-12-06 | Tool definitions |
+| `safety.py` | 1.0.0 | 2025-12-06 | Risk validation |
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                DIGITALOCEAN DROPLET ($6/month)                       │
-│                IP: 209.38.87.27                                      │
-│                                                                      │
-│   ┌──────────┐     ┌──────────────┐     ┌──────────────────┐        │
-│   │   CRON   │────▶│    AGENT     │────▶│      TOOLS       │        │
-│   │          │     │   (Python)   │     │    (Functions)   │        │
-│   │ 9:30 AM  │     │              │     │                  │        │
-│   │ 1:00 PM  │     │ Calls Claude │     │ - scan_market()  │        │
-│   │          │     │ Executes     │     │ - get_news()     │        │
-│   └──────────┘     │ Tools        │     │ - execute_trade()│        │
-│                    └──────────────┘     │ - check_risk()   │        │
-│                           │             └────────┬─────────┘        │
-│                           │                      │                  │
-│                           ▼                      ▼                  │
-│                    ┌──────────────┐     ┌──────────────────┐        │
-│                    │   CLAUDE     │     │   MOOMOO CLIENT  │        │
-│                    │    API       │     │                  │        │
-│                    │  (Anthropic) │     │  brokers/moomoo.py│       │
-│                    └──────────────┘     └────────┬─────────┘        │
-│                                                  │                  │
-│                                                  ▼                  │
-│                                         ┌──────────────────┐        │
-│                                         │     OpenD        │        │
-│                                         │  (Native Binary) │        │
-│                                         │  Port 11111      │        │
-│                                         └────────┬─────────┘        │
-└──────────────────────────────────────────────────┼──────────────────┘
-                                                   │
-                      ┌────────────────────────────┼────────────────┐
-                      │                            │                │
-                      ▼                            ▼                ▼
-              ┌──────────────┐           ┌──────────────┐   ┌──────────────┐
-              │   MOOMOO     │           │  POSTGRESQL  │   │    HKEX      │
-              │   SERVERS    │           │  (DO Managed)│   │   EXCHANGE   │
-              └──────────────┘           └──────────────┘   └──────────────┘
-```
+### 2.2 Configuration Files
 
-### 1.5 Agent Loop Flow
-
-```
-┌───────────────────┐
-│ 1. CRON Triggers  │  ← 09:30 HKT or 13:00 HKT
-└────────┬──────────┘
-         │
-         ▼
-┌───────────────────┐
-│ 2. Build Context  │  ← Load positions, cash, market state
-└────────┬──────────┘
-         │
-         ▼
-┌───────────────────┐
-│ 3. Call Claude    │  ← Send context + tools to Claude API
-│    API            │
-└────────┬──────────┘
-         │
-         ▼
-┌───────────────────┐
-│ 4. Claude Request │  ← Claude decides which tool to use
-│    Tool +         │
-│    Execute Tool   │  ← MoomooClient calls OpenD
-└────────┬──────────┘
-         │
-         ▼
-┌───────────────────┐
-│ 5. Return Result  │  ← Tool result to Claude
-│    to Claude      │
-└────────┬──────────┘
-         │
-         ▼
-┌───────────────────┐
-│ 6. Loop Until     │  ← Claude may call more tools
-│    Claude Done    │
-└────────┬──────────┘
-         │
-         ▼
-┌───────────────────┐
-│ 7. Log & Exit     │  ← Wait for next cron
-└───────────────────┘
-```
+| File | Purpose |
+|------|---------|
+| `config/settings.yaml` | Trading parameters |
+| `.env` | Environment variables |
 
 ---
 
-## 2. File Structure
+## 3. Trading Strategy
 
-```
-catalyst-international/
-│
-├── agent.py                    # Main agent script (runs via cron)
-├── tools.py                    # Tool definitions for Claude
-├── tool_executor.py            # Executes tool requests
-├── safety.py                   # Validates all actions
-│
-├── brokers/
-│   ├── __init__.py
-│   └── moomoo.py               # Moomoo client via OpenD (v1.0.0)
-│
-├── data/
-│   ├── __init__.py
-│   ├── market.py               # Market data fetching
-│   ├── news.py                 # News/sentiment
-│   └── database.py             # PostgreSQL client
-│
-├── config/
-│   ├── settings.yaml           # All configuration
-│   └── prompts/
-│       └── system.md           # Claude's instructions
-│
-├── scripts/
-│   └── health_check.sh         # Health monitoring
-│
-├── logs/                       # Daily log files
-│
-├── requirements.txt            # Python dependencies
-└── README.md
+### 3.1 SYSTEM_PROMPT - Tiered Entry Criteria (v2.2.0)
 
-/root/opend/                    # OpenD gateway (separate directory)
-├── OpenD                       # Native binary executable
-├── OpenD.xml                   # Configuration file
-└── logs/                       # OpenD logs
-```
+The agent uses a tiered approach instead of AND-based criteria:
 
----
+**Tier 1 - Strong Setup (Full Size)**
+- Volume > 2.0x, RSI 30-70, Pattern AND Catalyst, R:R >= 2:1
 
-## 3. OpenD Configuration
+**Tier 2 - Good Setup (Full Size)**
+- Volume > 1.5x, RSI 30-75, Pattern OR Catalyst, R:R >= 1.5:1
+- Within 1% of breakout counts as breakout
 
-### 3.1 Download OpenD
+**Tier 3 - Learning Trade (Half Size)**
+- Volume > 1.3x, RSI 25-80, Strong momentum (>3% daily)
+- At least one signal (pattern forming, news, sector)
 
-Download from official Moomoo site: **https://www.moomoo.com/download/OpenAPI**
+### 3.2 Pattern Detection (v1.1.0)
 
-Select the Ubuntu/Linux version and extract to `/root/opend/`
-
-```bash
-# Create directory
-mkdir -p /root/opend
-cd /root/opend
-
-# Extract downloaded archive (version may vary)
-tar -xzf OpenD_*_Ubuntu.tar.gz
-
-# Make executable
-chmod +x OpenD
-```
-
-### 3.2 Configuration File (OpenD.xml)
-
-```xml
-<moomoo_opend>
-    <!-- Basic parameters -->
-    <ip>127.0.0.1</ip>
-    <api_port>11111</api_port>
-    
-    <!-- Login credentials -->
-    <login_account>your_email@example.com</login_account>
-    
-    <!-- Use MD5 hash for production (more secure) -->
-    <login_pwd_md5>YOUR_32_CHAR_MD5_HASH</login_pwd_md5>
-    
-    <!-- OR plain text for testing (less secure) -->
-    <!-- <login_pwd>your_password</login_pwd> -->
-    
-    <!-- Language: en or chs -->
-    <lang>en</lang>
-    
-    <!-- Logging -->
-    <log_level>info</log_level>
-    
-    <!-- API Settings -->
-    <push_proto_type>0</push_proto_type>
-    <price_reminder_push>1</price_reminder_push>
-    <auto_hold_quote_right>1</auto_hold_quote_right>
-    
-    <!-- Timezone for HK trading -->
-    <future_trade_api_time_zone>UTC+8</future_trade_api_time_zone>
-    
-    <!-- US-specific protections (if trading US stocks) -->
-    <pdt_protection>1</pdt_protection>
-    <dtcall_confirmation>1</dtcall_confirmation>
-</moomoo_opend>
-```
-
-**Generate MD5 hash for password:**
-```bash
-echo -n "your_password" | md5sum | cut -d' ' -f1
-```
-
-### 3.3 Systemd Service
-
-```ini
-# /etc/systemd/system/opend.service
-[Unit]
-Description=Moomoo OpenD Gateway
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/root/opend
-ExecStart=/root/opend/OpenD
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-**Enable and start:**
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable opend
-sudo systemctl start opend
-sudo systemctl status opend
-```
-
-### 3.4 Environment Variables
-
-```bash
-# /root/Catalyst-Trading-System-International/catalyst-international/.env
-MOOMOO_HOST=127.0.0.1
-MOOMOO_PORT=11111
-MOOMOO_TRADE_PWD=your_trade_unlock_password
-```
+| Pattern | Description | Confidence |
+|---------|-------------|------------|
+| `breakout` | Above resistance with volume (2% tolerance) | 0.5-0.85 |
+| `near_breakout` | Within 1% of resistance | 0.4-0.6 |
+| `momentum_continuation` | >3% daily gain + 1.5x volume | 0.35-0.5 |
+| `bull_flag` | Uptrend + tight consolidation | 0.5-0.9 |
+| `ascending_triangle` | Flat resistance, rising lows | 0.6-0.9 |
+| `ABCD` | Harmonic pattern | 0.6-0.8 |
 
 ---
 
 ## 4. MoomooClient Implementation
 
-### 4.1 brokers/moomoo.py (v1.0.0)
-
-Key features:
-- Simple password-based authentication (no 2FA)
-- Real-time market data included
-- HKEX tick size rounding (`_round_to_tick()`)
-- Symbol format conversion (`_format_hk_symbol()`)
-- Position and order management
-- Auto-reconnect support
+### 4.1 Key Methods
 
 ```python
-# Key methods in MoomooClient:
-
-def connect(self) -> bool:
-    """Connect to OpenD and unlock trading"""
-
-def get_quote(self, symbol: str) -> dict:
-    """Get real-time quote for a symbol"""
-
-def get_portfolio(self) -> dict:
-    """Get cash, equity, positions, P&L"""
-
-def get_positions(self) -> list[Position]:
-    """Get all open positions"""
-
-def execute_trade(self, symbol, side, quantity, order_type, limit_price,
-                  stop_loss, take_profit, reason) -> OrderResult:
-    """Execute trade"""
-
-def close_position(self, symbol, reason) -> OrderResult:
-    """Close a specific position"""
-
-def close_all_positions(self, reason) -> list[OrderResult]:
-    """Emergency: close all positions"""
-
-def _format_hk_symbol(self, symbol: str) -> str:
-    """Format '700' -> 'HK.00700' for Moomoo API"""
-
-def _round_to_tick(self, price: float) -> float:
-    """Round to valid HKEX tick size (11 tiers)"""
+class MoomooClient:
+    def connect(self) -> bool
+    def disconnect(self)
+    def get_quote(self, symbol: str) -> dict
+    def get_quotes_batch(self, symbols: list) -> list  # v1.1.0
+    def get_portfolio(self) -> dict  # Fixed in v1.2.1
+    def get_positions(self) -> List[Position]
+    def execute_trade(...) -> OrderResult
+    def close_position(symbol, reason) -> OrderResult
+    def close_all_positions(reason) -> List[OrderResult]
+    def get_historical_data(symbol, days, ktype) -> pd.DataFrame  # v1.2.0
 ```
 
-### 4.2 Symbol Format Handling
+### 4.2 Portfolio Response (Fixed v1.2.1)
 
 ```python
-# Input formats → Moomoo format
-client._format_hk_symbol('700')   # → 'HK.00700'
-client._format_hk_symbol('0700')  # → 'HK.00700'
-client._format_hk_symbol('9988')  # → 'HK.09988'
-
-# Parse back from Moomoo format
-client._parse_hk_symbol('HK.00700')  # → '700'
+{
+    "cash": 315695.0,
+    "total_assets": 1019608.0,
+    "equity": 1019608.0,           # Added - alias for total_assets
+    "market_value": 703913.0,
+    "positions": [...],             # Added - list of position dicts
+    "position_count": 4,            # Added
+    "unrealized_pnl": 20625.0,
+    "daily_pnl": 0.0,               # Added
+    "daily_pnl_pct": 0.0,           # Added
+    "currency": "HKD"
+}
 ```
 
-### 4.3 Key Difference: No Bracket Orders
+### 4.3 Quote Response (Fixed v2.1.1)
 
-Unlike IBKR, Moomoo doesn't support native bracket orders (parent-child linked orders).
-Stop loss and take profit must be managed by:
-- Option A: Conditional orders (if supported by account type)
-- Option B: Agent-managed stops (Claude monitors and issues sell orders)
+```python
+{
+    "symbol": "1024",
+    "last": 76.30,          # Mapped from last_price
+    "bid": 76.25,           # Mapped from bid_price
+    "ask": 76.35,           # Mapped from ask_price
+    "high": 77.50,          # Mapped from high_price
+    "low": 75.80,           # Mapped from low_price
+    "open": 76.00,          # Mapped from open_price
+    "volume": 31000000,
+    "change": 0.30,         # Calculated if not provided
+    "change_pct": 0.39      # Calculated if not provided
+}
+```
 
 ---
 
-## 5. Commands
+## 5. Bug Fixes Applied (2026-01-06)
+
+### 5.1 tool_executor.py
+
+| Bug | Error | Fix |
+|-----|-------|-----|
+| OrderResult access | `TypeError: 'OrderResult' object is not subscriptable` | Use `result.status` not `result["status"]` |
+| has_position | `AttributeError: 'MoomooClient' has no attribute 'has_position'` | Query `get_positions()` and check list |
+| AlertSender | `TypeError: 'AlertSender' object is not callable` | Check for `.send()` method |
+| Portfolio KeyError | `KeyError: 'daily_pnl_pct'` | Use `.get()` with defaults |
+
+### 5.2 brokers/moomoo.py
+
+| Bug | Fix |
+|-----|-----|
+| Missing `positions` field | Call `get_positions()` and include in response |
+| Missing `equity` field | Add as alias for `total_assets` |
+| Missing `position_count` | Add count of positions |
+| Missing `daily_pnl_pct` | Add with default 0.0 |
+
+### 5.3 data/market.py
+
+| Bug | Fix |
+|-----|-----|
+| Field name mismatch | Map `last_price` → `last`, `bid_price` → `bid`, etc. |
+| Missing change calculation | Calculate from `prev_close` if not provided |
+
+---
+
+## 6. Commands
 
 ### Start OpenD
 ```bash
 sudo systemctl start opend
-# OR manually:
-cd /root/opend && ./OpenD
 ```
 
-### Check OpenD Status
+### Check Status
 ```bash
 sudo systemctl status opend
 ```
 
-### Check OpenD Logs
+### Manual Agent Run
 ```bash
-tail -f /root/opend/logs/*.log
+cd /root/Catalyst-Trading-System-International/catalyst-international
+source venv/bin/activate
+python3 agent.py --force
 ```
 
-### Test Connection
-```bash
-source /root/Catalyst-Trading-System-International/catalyst-international/venv/bin/activate
-python3 /root/opend/test_connection.py
-```
-
-### Quick Connection Test
+### Test Close Position
 ```python
 from brokers.moomoo import MoomooClient
-
 client = MoomooClient(paper_trading=True)
 client.connect()
-print(client.get_portfolio())
+result = client.close_position("1024", reason="Test close")
+print(result)
 client.disconnect()
 ```
 
 ---
 
-## 6. Cost Summary
+## 7. Cost Summary
 
 | Item | Cost |
 |------|------|
 | DO Droplet (Basic, 1GB) | $6 |
 | DO Managed PostgreSQL | $15 |
-| Claude API (~200 cycles × 5K tokens) | ~$15-25 |
+| Claude API (~50 cycles × 4K tokens) | ~$5-10 |
 | Moomoo Data (real-time included) | $0 |
-| **Total** | **~$36-46/month** |
+| **Total** | **~$26-31/month** |
 
 ---
 
-## 7. Key Resources
+## 8. Related Documents
 
-| Resource | URL |
-|----------|-----|
-| OpenD Download | https://www.moomoo.com/download/OpenAPI |
-| Moomoo API Docs | https://openapi.moomoo.com/moomoo-api-doc/en/intro/intro.html |
-| Python SDK (PyPI) | https://pypi.org/project/moomoo-api/ |
-| Quick Start Guide | https://openapi.moomoo.com/moomoo-api-doc/en/quick/opend-base.html |
-
----
-
-## 8. HKEX Tick Sizes
-
-| Price Range (HKD) | Tick Size |
-|-------------------|-----------|
-| < 0.25 | 0.001 |
-| 0.25 - 0.50 | 0.005 |
-| 0.50 - 10.00 | 0.01 |
-| 10.00 - 20.00 | 0.02 |
-| 20.00 - 100.00 | 0.05 |
-| 100.00 - 200.00 | 0.10 |
-| 200.00 - 500.00 | 0.20 |
-| 500.00 - 1000.00 | 0.50 |
-| 1000.00 - 2000.00 | 1.00 |
-| 2000.00 - 5000.00 | 2.00 |
-| > 5000.00 | 5.00 |
-
-Use `client._round_to_tick(price)` to ensure compliance.
+| Document | Purpose |
+|----------|---------|
+| `CLAUDE.md` | Agent operational guidelines |
+| `database-schema.md` | Database schema |
+| `functional-specification.md` | Tool specifications |
 
 ---
 
-## 9. Known Limitations
-
-1. **No native bracket orders** - Moomoo doesn't support parent-child linked SL/TP orders
-2. **Lot size** - HKEX requires trades in multiples of 100 shares
-3. **Market hours only** - No pre/post market trading for HKEX
-
----
-
-## End of Document
+**END OF ARCHITECTURE DOCUMENT v5.2.0**
