@@ -1,27 +1,18 @@
 """
-Name of Application: Catalyst Trading System
-Name of file: patterns.py
-Version: 1.1.0
-Last Updated: 2026-01-06
-Purpose: Chart pattern detection with relaxed breakout criteria
+Chart pattern detection for the Catalyst Trading Agent.
 
-REVISION HISTORY:
-v1.1.0 (2026-01-06) - Relaxed breakout detection for paper trading
-- Allow continuation breakouts (prev_close can be up to 2% above resistance)
-- Add "near_breakout" pattern for stocks within 1% of resistance
-- Add "momentum_continuation" pattern for strong trending stocks
-- Log near-miss patterns for learning
-- Reduced volume requirement from 1.5x to 1.3x for Tier 3 patterns
-
-v1.0.0 (2025-12-06) - Initial implementation
-- 8 pattern types: bull_flag, bear_flag, cup_handle, triangles, ABCD, breakout, breakdown
-
-Description:
-This module detects chart patterns in price data for trading signals.
-Patterns are detected using technical analysis of OHLCV data.
+This module detects common momentum day trading patterns:
+- Bull Flag
+- Bear Flag
+- Cup and Handle
+- Ascending Triangle
+- Descending Triangle
+- ABCD Pattern
+- Breakout/Breakdown
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -32,115 +23,142 @@ from scipy.signal import argrelextrema
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class Pattern:
+    """Detected chart pattern."""
+
+    pattern_type: str
+    confidence: float  # 0-1
+    entry_price: float
+    stop_loss: float
+    target_price: float
+    risk_reward: float
+    description: str
+    timestamp: datetime
+
+
 class PatternDetector:
-    """Chart pattern detection for HKEX stocks."""
+    """Detects chart patterns in price data."""
 
     def __init__(self, market_data: Any = None):
         """Initialize pattern detector.
 
         Args:
-            market_data: MarketDataClient instance for fetching OHLCV data
+            market_data: MarketData instance for price data
         """
         self.market_data = market_data
 
     def set_market_data(self, market_data: Any):
-        """Set market data client."""
+        """Set the market data provider."""
         self.market_data = market_data
 
-    def detect_patterns(self, symbol: str, days: int = 30) -> list[dict]:
+    def detect_patterns(self, symbol: str, timeframe: str = "15m") -> list[dict]:
         """Detect all patterns for a symbol.
 
         Args:
-            symbol: Stock symbol (e.g., "0700" for Tencent)
-            days: Number of days of data to analyze
+            symbol: Stock code
+            timeframe: Analysis timeframe
 
         Returns:
-            List of detected patterns with entry/exit levels
+            List of detected patterns
         """
         if not self.market_data:
-            logger.warning("No market data client set")
-            return []
+            raise RuntimeError("Market data provider not initialized")
 
-        # Get historical data
-        try:
-            df = self.market_data.get_ohlcv(symbol, days=days)
-            if df is None or len(df) < 20:
-                return []
-        except Exception as e:
-            logger.error(f"Failed to get OHLCV for {symbol}: {e}")
+        # Get price data
+        df = self.market_data.get_historical(symbol, timeframe, bars=100)
+
+        if len(df) < 50:
             return []
 
         patterns = []
 
-        # Run all pattern detectors
+        # Detect each pattern type
         detectors = [
             self._detect_bull_flag,
             self._detect_bear_flag,
             self._detect_cup_handle,
             self._detect_ascending_triangle,
             self._detect_descending_triangle,
-            self._detect_ABCD,
+            self._detect_abcd,
             self._detect_breakout,
             self._detect_breakdown,
-            self._detect_near_breakout,           # NEW: Within 1% of breakout
-            self._detect_momentum_continuation,   # NEW: Strong trend continuation
         ]
 
         for detector in detectors:
             try:
-                pattern = detector(df)
-                if pattern:
-                    pattern["symbol"] = symbol
-                    patterns.append(pattern)
+                result = detector(df)
+                if result:
+                    patterns.append(result)
             except Exception as e:
-                logger.error(f"Pattern detection error ({detector.__name__}): {e}")
+                logger.warning(f"Pattern detection error: {e}")
+                continue
+
+        # Sort by confidence
+        patterns.sort(key=lambda x: x["confidence"], reverse=True)
 
         return patterns
 
     def _detect_bull_flag(self, df: pd.DataFrame) -> dict | None:
         """Detect bull flag pattern.
 
-        Bull flag: Strong uptrend (pole) followed by consolidation (flag).
+        Bull flag: Strong upward move (pole) followed by consolidation (flag)
+        that slopes slightly downward or sideways.
         """
-        if len(df) < 20:
-            return None
+        close = df["close"].values
+        high = df["high"].values
+        low = df["low"].values
 
-        recent = df.tail(30)
+        # Look for pole in last 20-40 bars
+        lookback = min(40, len(df) - 10)
+        recent = df.tail(lookback)
 
-        # Find the pole (strong uptrend in first portion)
-        pole_start = recent.iloc[0]["low"]
-        pole_end_idx = len(recent) // 2
-        pole_end = recent.iloc[pole_end_idx]["high"]
+        # Find the pole (strong upward move)
+        max_idx = recent["high"].idxmax()
+        pole_start_idx = max(0, df.index.get_loc(max_idx) - 10)
+        pole_start = df.index[pole_start_idx]
 
-        pole_pct = (pole_end - pole_start) / pole_start
+        pole_move = df.loc[max_idx, "high"] - df.loc[pole_start, "low"]
+        pole_pct = pole_move / df.loc[pole_start, "low"]
 
-        # Pole should be significant (> 5%)
+        # Need at least 5% pole
         if pole_pct < 0.05:
             return None
 
-        # Flag portion (consolidation)
-        flag = recent.iloc[pole_end_idx:]
-        flag_high = flag["high"].max()
-        flag_low = flag["low"].min()
-        flag_range = (flag_high - flag_low) / pole_end
+        # Check for consolidation after pole (flag)
+        flag_bars = df.loc[max_idx:]
 
-        # Flag should be tight (< 50% of pole range)
+        if len(flag_bars) < 5:
+            return None
+
+        # Flag should be tightening range
+        flag_high = flag_bars["high"].max()
+        flag_low = flag_bars["low"].min()
+        flag_range = (flag_high - flag_low) / flag_high
+
+        # Flag range should be < 50% of pole
         if flag_range > pole_pct * 0.5:
             return None
 
-        # Price shouldn't retrace more than 50% of pole
-        current = recent["close"].iloc[-1]
-        retracement = (pole_end - current) / (pole_end - pole_start)
+        # Flag should be near highs (not more than 50% retracement)
+        current = close[-1]
+        retracement = (flag_high - current) / pole_move
 
         if retracement > 0.5:
             return None
 
-        confidence = self._calculate_pattern_confidence(pole_pct, flag_range, retracement)
+        # Calculate confidence based on pattern quality
+        confidence = self._calculate_pattern_confidence(
+            pole_pct=pole_pct, flag_range=flag_range, retracement=retracement
+        )
 
-        # Entry at breakout above flag high
-        entry_price = flag_high * 1.005
-        stop_loss = flag_low * 0.99
-        target_price = entry_price + (pole_end - pole_start)
+        if confidence < 0.5:
+            return None
+
+        # Entry, stop, target
+        entry_price = flag_high * 1.001  # Breakout above flag high
+        stop_loss = flag_low * 0.99  # Below flag low
+        target_price = entry_price + pole_move  # Pole extension
 
         risk = entry_price - stop_loss
         reward = target_price - entry_price
@@ -153,45 +171,59 @@ class PatternDetector:
             "stop_loss": round(stop_loss, 2),
             "target_price": round(target_price, 2),
             "risk_reward": round(risk_reward, 2),
-            "description": f"Bull flag with {pole_pct*100:.1f}% pole",
+            "description": f"Bull flag with {pole_pct*100:.1f}% pole, {flag_range*100:.1f}% consolidation",
             "timestamp": datetime.now().isoformat(),
         }
 
     def _detect_bear_flag(self, df: pd.DataFrame) -> dict | None:
         """Detect bear flag pattern (inverse of bull flag)."""
-        if len(df) < 20:
-            return None
+        close = df["close"].values
+        high = df["high"].values
+        low = df["low"].values
 
-        recent = df.tail(30)
+        lookback = min(40, len(df) - 10)
+        recent = df.tail(lookback)
 
-        pole_start = recent.iloc[0]["high"]
-        pole_end_idx = len(recent) // 2
-        pole_end = recent.iloc[pole_end_idx]["low"]
+        # Find the pole (strong downward move)
+        min_idx = recent["low"].idxmin()
+        pole_start_idx = max(0, df.index.get_loc(min_idx) - 10)
+        pole_start = df.index[pole_start_idx]
 
-        pole_pct = (pole_start - pole_end) / pole_start
+        pole_move = df.loc[pole_start, "high"] - df.loc[min_idx, "low"]
+        pole_pct = pole_move / df.loc[pole_start, "high"]
 
         if pole_pct < 0.05:
             return None
 
-        flag = recent.iloc[pole_end_idx:]
-        flag_high = flag["high"].max()
-        flag_low = flag["low"].min()
-        flag_range = (flag_high - flag_low) / pole_end
+        # Check for consolidation
+        flag_bars = df.loc[min_idx:]
+
+        if len(flag_bars) < 5:
+            return None
+
+        flag_high = flag_bars["high"].max()
+        flag_low = flag_bars["low"].min()
+        flag_range = (flag_high - flag_low) / flag_low
 
         if flag_range > pole_pct * 0.5:
             return None
 
-        current = recent["close"].iloc[-1]
-        retracement = (current - pole_end) / (pole_start - pole_end)
+        current = close[-1]
+        retracement = (current - flag_low) / pole_move
 
         if retracement > 0.5:
             return None
 
-        confidence = self._calculate_pattern_confidence(pole_pct, flag_range, retracement)
+        confidence = self._calculate_pattern_confidence(
+            pole_pct=pole_pct, flag_range=flag_range, retracement=retracement
+        )
 
-        entry_price = flag_low * 0.995
+        if confidence < 0.5:
+            return None
+
+        entry_price = flag_low * 0.999
         stop_loss = flag_high * 1.01
-        target_price = entry_price - (pole_start - pole_end)
+        target_price = entry_price - pole_move
 
         risk = stop_loss - entry_price
         reward = entry_price - target_price
@@ -211,53 +243,59 @@ class PatternDetector:
     def _detect_cup_handle(self, df: pd.DataFrame) -> dict | None:
         """Detect cup and handle pattern.
 
-        Cup and handle: U-shaped price action followed by a small pullback (handle).
+        Cup and handle: U-shaped cup followed by small downward drift (handle)
+        before breaking out.
         """
-        if len(df) < 40:
+        if len(df) < 30:
             return None
 
-        recent = df.tail(60)
+        close = df["close"].values
+        high = df["high"].values
 
-        # Find the cup portion (U-shape)
-        high = recent["high"].values
-        low = recent["low"].values
+        # Find potential cup (U-shape in last 50 bars)
+        lookback = min(50, len(df))
+        cup_data = df.tail(lookback)
 
-        # Left rim, bottom, right rim
-        cup_start = 0
-        cup_end = len(recent) - 10  # Leave room for handle
+        # Find left rim, bottom, right rim
+        left_rim_idx = cup_data["high"].head(10).idxmax()
+        bottom_idx = cup_data["low"].idxmin()
+        right_rim_idx = cup_data["high"].tail(15).idxmax()
 
-        left_rim = high[:10].max()
-        right_rim = high[cup_end - 10 : cup_end].max()
-        cup_bottom = low[10 : cup_end - 10].min()
+        # Validate cup shape
+        left_rim = cup_data.loc[left_rim_idx, "high"]
+        bottom = cup_data.loc[bottom_idx, "low"]
+        right_rim = cup_data.loc[right_rim_idx, "high"]
 
-        # Cup should have reasonable depth (12-35%)
-        cup_depth = (max(left_rim, right_rim) - cup_bottom) / max(left_rim, right_rim)
+        # Cup depth should be 12-35%
+        cup_depth = (left_rim - bottom) / left_rim
         if cup_depth < 0.12 or cup_depth > 0.35:
             return None
 
-        # Rims should be at similar level (within 5%)
-        rim_diff = abs(left_rim - right_rim) / max(left_rim, right_rim)
+        # Rims should be relatively equal (within 5%)
+        rim_diff = abs(left_rim - right_rim) / left_rim
         if rim_diff > 0.05:
             return None
 
-        # Handle portion (small pullback)
-        handle = recent.iloc[cup_end:]
-        handle_high = handle["high"].max()
-        handle_low = handle["low"].min()
+        # Check for handle (small pullback after right rim)
+        handle_data = cup_data.loc[right_rim_idx:]
+        if len(handle_data) < 3:
+            return None
 
-        # Handle should be less than 50% of cup depth
-        handle_depth = (handle_high - handle_low) / handle_high
+        handle_low = handle_data["low"].min()
+        handle_depth = (right_rim - handle_low) / right_rim
+
+        # Handle should be < 50% of cup depth
         if handle_depth > cup_depth * 0.5:
             return None
 
-        current = recent["close"].iloc[-1]
-        breakout_level = max(left_rim, right_rim)
+        confidence = 0.5 + (1 - rim_diff) * 0.2 + (1 - handle_depth / cup_depth) * 0.3
 
-        confidence = 0.6 + (1 - rim_diff * 10) * 0.2 + (1 - handle_depth / cup_depth) * 0.2
+        if confidence < 0.6:
+            return None
 
-        entry_price = breakout_level * 1.005
+        entry_price = right_rim * 1.001
         stop_loss = handle_low * 0.99
-        target_price = entry_price + (breakout_level - cup_bottom)
+        target_price = entry_price + (left_rim - bottom)
 
         risk = entry_price - stop_loss
         reward = target_price - entry_price
@@ -265,12 +303,12 @@ class PatternDetector:
 
         return {
             "pattern_type": "cup_handle",
-            "confidence": round(min(confidence, 0.9), 2),
+            "confidence": round(confidence, 2),
             "entry_price": round(entry_price, 2),
             "stop_loss": round(stop_loss, 2),
             "target_price": round(target_price, 2),
             "risk_reward": round(risk_reward, 2),
-            "description": f"Cup & Handle with {cup_depth*100:.0f}% depth",
+            "description": f"Cup & Handle with {cup_depth*100:.1f}% cup depth",
             "timestamp": datetime.now().isoformat(),
         }
 
@@ -349,12 +387,14 @@ class PatternDetector:
         if len(high_peaks) < 3 or len(low_troughs) < 3:
             return None
 
+        # Flat support
         trough_prices = low[low_troughs[-3:]]
         support_std = np.std(trough_prices) / np.mean(trough_prices)
 
         if support_std > 0.02:
             return None
 
+        # Lower highs
         peak_prices = high[high_peaks[-3:]]
 
         if not (peak_prices[1] < peak_prices[0] and peak_prices[2] < peak_prices[1]):
@@ -387,8 +427,8 @@ class PatternDetector:
             "timestamp": datetime.now().isoformat(),
         }
 
-    def _detect_ABCD(self, df: pd.DataFrame) -> dict | None:
-        """Detect ABCD harmonic pattern.
+    def _detect_abcd(self, df: pd.DataFrame) -> dict | None:
+        """Detect ABCD pattern.
 
         ABCD: A to B move, B to C retracement (38-62%), C to D move equal to A-B.
         """
@@ -471,12 +511,7 @@ class PatternDetector:
             return None
 
     def _detect_breakout(self, df: pd.DataFrame) -> dict | None:
-        """Detect breakout above resistance.
-        
-        RELAXED in v1.1.0:
-        - Allow continuation breakouts (prev_close up to 2% above resistance)
-        - Reduced volume requirement to 1.3x for more signals
-        """
+        """Detect breakout above resistance."""
         if len(df) < 20:
             return None
 
@@ -490,31 +525,23 @@ class PatternDetector:
         current = recent["close"].iloc[-1]
         prev_close = recent["close"].iloc[-2]
 
-        # Must be above resistance
+        # Must be breaking above resistance
         if current <= resistance:
             return None
 
-        # RELAXED: Previous bar can be up to 2% above resistance (continuation breakout)
-        # OLD: if prev_close > resistance: return None
-        if prev_close > resistance * 1.02:
-            # Log for learning but don't reject immediately
-            logger.info(f"Continuation breakout: prev={prev_close:.2f} > resistance*1.02={resistance*1.02:.2f}")
+        # Previous bar should have been below resistance
+        if prev_close > resistance:
             return None
 
-        # Volume confirmation - RELAXED from 1.5x to 1.3x
+        # Volume confirmation
         avg_volume = consolidation["volume"].mean()
         current_volume = recent["volume"].iloc[-1]
         volume_ratio = current_volume / avg_volume if avg_volume > 0 else 0
 
-        if volume_ratio < 1.3:  # Was 1.5
+        if volume_ratio < 1.5:
             return None
 
-        # Confidence based on volume and how clean the breakout is
-        confidence = 0.5 + min(volume_ratio - 1.3, 1.5) * 0.2
-        
-        # Bonus confidence if this is a fresh breakout (prev_close was below)
-        if prev_close <= resistance:
-            confidence += 0.1
+        confidence = 0.5 + min(volume_ratio - 1.5, 1.5) * 0.2
 
         # Support from consolidation
         support = consolidation["low"].min()
@@ -540,7 +567,7 @@ class PatternDetector:
         }
 
     def _detect_breakdown(self, df: pd.DataFrame) -> dict | None:
-        """Detect breakdown below support."""
+        """Detect breakdown below support (bearish)."""
         if len(df) < 20:
             return None
 
@@ -554,18 +581,17 @@ class PatternDetector:
         if current >= support:
             return None
 
-        # RELAXED: Allow continuation breakdown
-        if prev_close < support * 0.98:
+        if prev_close < support:
             return None
 
         avg_volume = consolidation["volume"].mean()
         current_volume = recent["volume"].iloc[-1]
         volume_ratio = current_volume / avg_volume if avg_volume > 0 else 0
 
-        if volume_ratio < 1.3:  # Was 1.5
+        if volume_ratio < 1.5:
             return None
 
-        confidence = 0.5 + min(volume_ratio - 1.3, 1.5) * 0.2
+        confidence = 0.5 + min(volume_ratio - 1.5, 1.5) * 0.2
 
         resistance = consolidation["high"].max()
         breakdown_range = resistance - support
@@ -586,121 +612,6 @@ class PatternDetector:
             "target_price": round(target_price, 2),
             "risk_reward": round(risk_reward, 2),
             "description": f"Breakdown below {support:.2f} with {volume_ratio:.1f}x volume",
-            "timestamp": datetime.now().isoformat(),
-        }
-
-    def _detect_near_breakout(self, df: pd.DataFrame) -> dict | None:
-        """NEW: Detect stocks within 1% of breakout level.
-        
-        This catches setups that are "close enough" per the relaxed criteria.
-        Returns a lower confidence pattern for Tier 2/3 evaluation.
-        """
-        if len(df) < 20:
-            return None
-
-        recent = df.tail(30)
-        consolidation = recent.head(25)
-        resistance = consolidation["high"].max()
-
-        current = recent["close"].iloc[-1]
-
-        # Check if within 1% of resistance (approaching breakout)
-        distance_pct = (resistance - current) / resistance
-        
-        if distance_pct < 0 or distance_pct > 0.01:
-            # Either already broken out or too far away
-            return None
-
-        # Volume should show interest
-        avg_volume = consolidation["volume"].mean()
-        current_volume = recent["volume"].iloc[-1]
-        volume_ratio = current_volume / avg_volume if avg_volume > 0 else 0
-
-        if volume_ratio < 1.2:  # Lower threshold for "approaching"
-            return None
-
-        # Lower confidence since not yet broken out
-        confidence = 0.4 + min(volume_ratio - 1.2, 1.0) * 0.15
-
-        support = consolidation["low"].min()
-        breakout_range = resistance - support
-
-        # Entry at resistance (anticipating breakout)
-        entry_price = resistance * 1.002
-        stop_loss = support * 0.99
-        target_price = resistance + breakout_range
-
-        risk = entry_price - stop_loss
-        reward = target_price - entry_price
-        risk_reward = reward / risk if risk > 0 else 0
-
-        return {
-            "pattern_type": "near_breakout",
-            "confidence": round(min(confidence, 0.6), 2),
-            "entry_price": round(entry_price, 2),
-            "stop_loss": round(stop_loss, 2),
-            "target_price": round(target_price, 2),
-            "risk_reward": round(risk_reward, 2),
-            "description": f"Within {distance_pct*100:.1f}% of resistance {resistance:.2f}",
-            "timestamp": datetime.now().isoformat(),
-        }
-
-    def _detect_momentum_continuation(self, df: pd.DataFrame) -> dict | None:
-        """NEW: Detect strong momentum continuation for Tier 3 trades.
-        
-        Catches stocks with >3% daily gain and strong volume,
-        even without a classic pattern formation.
-        """
-        if len(df) < 5:
-            return None
-
-        recent = df.tail(10)
-        
-        # Today's move
-        current = recent["close"].iloc[-1]
-        prev_close = recent["close"].iloc[-2]
-        today_change = (current - prev_close) / prev_close
-
-        # Need >3% move today for momentum
-        if today_change < 0.03:
-            return None
-
-        # Volume confirmation
-        avg_volume = recent["volume"].iloc[:-1].mean()
-        current_volume = recent["volume"].iloc[-1]
-        volume_ratio = current_volume / avg_volume if avg_volume > 0 else 0
-
-        if volume_ratio < 1.5:  # Strong volume required
-            return None
-
-        # Check if trending (3-day trend)
-        three_day_change = (current - recent["close"].iloc[-4]) / recent["close"].iloc[-4]
-        
-        if three_day_change < 0.05:  # Need 5% over 3 days
-            return None
-
-        # Low confidence - this is a Tier 3 learning trade
-        confidence = 0.35 + min(volume_ratio - 1.5, 2.0) * 0.1
-
-        # Simple stop and target based on ATR-like calculation
-        recent_range = (recent["high"] - recent["low"]).mean()
-        
-        entry_price = current
-        stop_loss = current - (recent_range * 2)  # 2 ATR stop
-        target_price = current + (recent_range * 3)  # 3 ATR target
-
-        risk = entry_price - stop_loss
-        reward = target_price - entry_price
-        risk_reward = reward / risk if risk > 0 else 0
-
-        return {
-            "pattern_type": "momentum_continuation",
-            "confidence": round(min(confidence, 0.5), 2),
-            "entry_price": round(entry_price, 2),
-            "stop_loss": round(stop_loss, 2),
-            "target_price": round(target_price, 2),
-            "risk_reward": round(risk_reward, 2),
-            "description": f"Strong momentum +{today_change*100:.1f}% with {volume_ratio:.1f}x volume",
             "timestamp": datetime.now().isoformat(),
         }
 
