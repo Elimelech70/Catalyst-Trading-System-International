@@ -147,29 +147,35 @@ class MarketData:
         if not self.broker:
             raise RuntimeError("Broker client not initialized")
 
-        # Fetch from IBKR
+        # Fetch from broker (Moomoo)
         data = self.broker.get_quote(symbol)
 
-        # Calculate volume ratio (handle NaN from delayed data)
-        avg_volume = safe_int(data.get("avg_volume"), 1)
+        # Calculate volume ratio and change % (handle NaN from delayed data)
         volume = safe_int(data.get("volume"), 0)
-        volume_ratio = volume / avg_volume if avg_volume > 0 else 0
+        avg_volume = safe_int(data.get("avg_volume"), volume or 1)  # Fallback to volume
+        volume_ratio = volume / avg_volume if avg_volume > 0 else 1.0
+
+        # Calculate change from prev_close if not provided
+        last_price = safe_float(data.get("last_price") or data.get("last"))
+        prev_close = safe_float(data.get("prev_close") or data.get("prev_close_price"))
+        change = last_price - prev_close if prev_close else 0
+        change_pct = (change / prev_close * 100) if prev_close else 0
 
         return {
             "symbol": symbol,
             "name": data.get("name", symbol),
-            "price": safe_float(data.get("last")),
-            "bid": safe_float(data.get("bid")),
-            "ask": safe_float(data.get("ask")),
+            "price": last_price,
+            "bid": safe_float(data.get("bid_price") or data.get("bid")),
+            "ask": safe_float(data.get("ask_price") or data.get("ask")),
             "volume": volume,
             "avg_volume": avg_volume,
             "volume_ratio": round(volume_ratio, 2),
-            "change": safe_float(data.get("change")),
-            "change_pct": safe_float(data.get("change_pct")),
-            "day_high": safe_float(data.get("high")),
-            "day_low": safe_float(data.get("low")),
-            "open": safe_float(data.get("open")),
-            "prev_close": safe_float(data.get("prev_close")),
+            "change": round(change, 2),
+            "change_pct": round(change_pct, 2),
+            "day_high": safe_float(data.get("high_price") or data.get("high")),
+            "day_low": safe_float(data.get("low_price") or data.get("low")),
+            "open": safe_float(data.get("open_price") or data.get("open")),
+            "prev_close": prev_close,
             "market_cap": safe_float(data.get("market_cap")),
             "lot_size": 100,  # HKEX board lot
             "timestamp": datetime.now().isoformat(),

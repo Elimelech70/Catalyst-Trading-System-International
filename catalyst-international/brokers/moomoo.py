@@ -390,15 +390,38 @@ class MoomooClient:
             except (ValueError, TypeError):
                 return default
 
+        # Get positions for complete portfolio view
+        positions_list = self.get_positions()
+        positions_data = [
+            {
+                "symbol": p.symbol,
+                "quantity": p.quantity,
+                "avg_cost": p.avg_cost,
+                "current_price": p.current_price,
+                "unrealized_pnl": p.unrealized_pnl,
+                "unrealized_pnl_pct": p.unrealized_pnl_pct,
+            }
+            for p in positions_list
+        ]
+
+        total_assets = safe_float(row.get("total_assets", 0))
+        cash = safe_float(row.get("cash", 0))
+        unrealized_pnl = safe_float(row.get("unrealized_pl", 0))
+
         return {
-            "cash": safe_float(row.get("cash", 0)),
-            "total_assets": safe_float(row.get("total_assets", 0)),
+            "cash": cash,
+            "equity": total_assets,  # Alias for tool_executor compatibility
+            "total_assets": total_assets,
             "market_value": safe_float(row.get("market_val", 0)),
             "frozen_cash": safe_float(row.get("frozen_cash", 0)),
             "available_funds": safe_float(row.get("avl_withdrawal_cash", 0)),
-            "unrealized_pnl": safe_float(row.get("unrealized_pl", 0)),
+            "unrealized_pnl": unrealized_pnl,
             "realized_pnl": safe_float(row.get("realized_pl", 0)),
             "currency": str(row.get("currency", "HKD")),
+            "positions": positions_data,
+            "position_count": len(positions_data),
+            "daily_pnl": unrealized_pnl,  # Approximate with unrealized
+            "daily_pnl_pct": (unrealized_pnl / total_assets * 100) if total_assets > 0 else 0,
         }
 
     def get_positions(self) -> List[Position]:

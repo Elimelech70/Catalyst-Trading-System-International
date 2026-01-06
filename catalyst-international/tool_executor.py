@@ -208,7 +208,7 @@ class ToolExecutor:
 
         # Get portfolio info
         portfolio = self.broker.get_portfolio()
-        positions = portfolio["positions"]
+        positions = portfolio.get("positions", [])
 
         # Validate
         result = validate_trade_request(
@@ -392,7 +392,11 @@ class ToolExecutor:
         message = inputs["message"]
 
         if self.alert_callback:
-            self.alert_callback(severity, subject, message)
+            # Handle both callable functions and AlertSender objects
+            if hasattr(self.alert_callback, 'send'):
+                self.alert_callback.send(severity, subject, message)
+            else:
+                self.alert_callback(severity, subject, message)
             return {
                 "sent": True,
                 "severity": severity,
