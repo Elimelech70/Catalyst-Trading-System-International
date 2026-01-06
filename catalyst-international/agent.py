@@ -1,11 +1,18 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: agent.py
-Version: 2.2.0
-Last Updated: 2026-01-02
-Purpose: Main AI Agent loop that uses Claude to make trading decisions
+Version: 2.3.0
+Last Updated: 2026-01-06
+Purpose: Main AI Agent loop with real-time workflow tracking
 
 REVISION HISTORY:
+v2.3.0 (2026-01-06) - Added workflow tracking
+- Integrated WorkflowTracker for real-time phase visibility
+- Tracks: INIT → PORTFOLIO → SCAN → ANALYZE → DECIDE → VALIDATE → EXECUTE → MONITOR → LOG → COMPLETE
+- Progress stored in consciousness DB (viewable via MCP/dashboard)
+- Console progress bar during execution
+- Phase timing and results recorded
+
 v2.2.0 (2026-01-02) - Relaxed entry criteria for paper trading
 - Changed from AND-based to TIERED entry criteria (Tier 1/2/3)
 - RSI range expanded to 30-75 (was 40-70)
@@ -39,19 +46,28 @@ Architecture:
     CRON triggers -> Build Context -> Call Claude API -> Claude requests tool
         -> Execute tool -> Return result -> Claude continues -> Loop until done
 
-This single-file agent replaces the 8-service microservices architecture
-from the US system, using Claude's decision-making instead of hardcoded
-workflow logic.
+WORKFLOW PHASES:
+    1. INIT       - Agent waking up, loading config
+    2. PORTFOLIO  - Checking current positions
+    3. SCAN       - Finding momentum candidates  
+    4. ANALYZE    - Evaluating candidates (quote, technicals, patterns, news)
+    5. DECIDE     - Applying entry criteria
+    6. VALIDATE   - Risk check
+    7. EXECUTE    - Placing orders
+    8. MONITOR    - Position monitoring started
+    9. LOG        - Recording decisions
+    10. COMPLETE  - Cycle finished
 """
 
 import argparse
+import asyncio
 import json
 import logging
 import os
 import sys
 import uuid
-from datetime import datetime
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 import anthropic
@@ -80,6 +96,175 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
+
+
+# =============================================================================
+# WORKFLOW TRACKER - Real-time visibility into trading cycle
+# =============================================================================
+
+class WorkflowTracker:
+    """Track workflow phases in real-time.
+    
+    Stores progress in the consciousness database for visibility
+    via MCP tools and web dashboard.
+    """
+    
+    # All phases in order
+    ALL_PHASES = ["INIT", "PORTFOLIO", "SCAN", "ANALYZE", "DECIDE", "VALIDATE", "EXECUTE", "MONITOR", "LOG", "COMPLETE"]
+    
+    def __init__(self, cycle_id: str, agent_id: str = "intl_claude"):
+        self.cycle_id = cycle_id
+        self.agent_id = agent_id
+        self.phases: List[Dict] = []
+        self.current_phase: Optional[str] = None
+        self.started_at = datetime.now(HK_TZ)
+        self._pool = None
+        
+    async def connect(self):
+        """Connect to consciousness database."""
+        if self._pool is None:
+            database_url = os.environ.get("RESEARCH_DATABASE_URL")
+            if database_url:
+                try:
+                    import asyncpg
+                    self._pool = await asyncpg.create_pool(database_url, min_size=1, max_size=2)
+                    logger.debug("WorkflowTracker connected to consciousness DB")
+                except Exception as e:
+                    logger.warning(f"Could not connect to consciousness DB: {e}")
+                    
+    async def disconnect(self):
+        """Disconnect from database."""
+        if self._pool:
+            await self._pool.close()
+            self._pool = None
+            
+    async def start_phase(self, phase: str, description: str = "", details: Dict[str, Any] = None):
+        """Start a new workflow phase."""
+        now = datetime.now(HK_TZ)
+        
+        record = {
+            "phase": phase,
+            "status": "started",
+            "started_at": now.isoformat(),
+            "completed_at": None,
+            "duration_ms": None,
+            "details": details or {"description": description},
+            "error": None
+        }
+        self.phases.append(record)
+        self.current_phase = phase
+        
+        logger.info(f"[{self.cycle_id}] ▶ Phase {phase}: {description}")
+        self._print_progress_bar()
+        
+        await self._store_progress()
+        
+    async def complete_phase(self, phase: str, **results):
+        """Complete a workflow phase."""
+        now = datetime.now(HK_TZ)
+        
+        for record in reversed(self.phases):
+            if record["phase"] == phase and record["status"] == "started":
+                started = datetime.fromisoformat(record["started_at"])
+                record["status"] = "completed"
+                record["completed_at"] = now.isoformat()
+                record["duration_ms"] = int((now - started).total_seconds() * 1000)
+                if results:
+                    record["details"] = {**(record["details"] or {}), **results}
+                break
+                
+        result_str = ", ".join(f"{k}={v}" for k, v in results.items()) if results else ""
+        logger.info(f"[{self.cycle_id}] ✓ Phase {phase} completed ({result_str})")
+        self._print_progress_bar()
+        
+        await self._store_progress()
+        
+    async def error_phase(self, phase: str, error: str):
+        """Mark a phase as errored."""
+        now = datetime.now(HK_TZ)
+        
+        for record in reversed(self.phases):
+            if record["phase"] == phase and record["status"] == "started":
+                started = datetime.fromisoformat(record["started_at"])
+                record["status"] = "error"
+                record["completed_at"] = now.isoformat()
+                record["duration_ms"] = int((now - started).total_seconds() * 1000)
+                record["error"] = error
+                break
+                
+        logger.error(f"[{self.cycle_id}] ✗ Phase {phase} error: {error}")
+        
+        await self._store_progress()
+        
+    async def _store_progress(self):
+        """Store current progress in consciousness database."""
+        if not self._pool:
+            await self.connect()
+            
+        if not self._pool:
+            return
+            
+        try:
+            progress = {
+                "cycle_id": self.cycle_id,
+                "agent_id": self.agent_id,
+                "started_at": self.started_at.isoformat(),
+                "current_phase": self.current_phase,
+                "phases": self.phases,
+                "updated_at": datetime.now(HK_TZ).isoformat()
+            }
+            
+            async with self._pool.acquire() as conn:
+                # Store as observation with type 'workflow'
+                await conn.execute("""
+                    INSERT INTO claude_observations 
+                    (agent_id, obs_type, subject, content, confidence, created_at)
+                    VALUES ($1, 'workflow', $2, $3, 1.0, NOW())
+                    ON CONFLICT ON CONSTRAINT claude_observations_pkey DO UPDATE SET 
+                        content = EXCLUDED.content,
+                        created_at = NOW()
+                """, self.agent_id, f"cycle:{self.cycle_id}", json.dumps(progress))
+                
+        except Exception as e:
+            logger.debug(f"Could not store workflow progress: {e}")
+            
+    def _print_progress_bar(self):
+        """Print a visual progress bar to console."""
+        completed = {r["phase"] for r in self.phases if r["status"] == "completed"}
+        current = self.current_phase
+        
+        bar = "["
+        for phase in self.ALL_PHASES:
+            if phase in completed:
+                bar += "█"
+            elif phase == current:
+                bar += "▓"
+            else:
+                bar += "░"
+        bar += "]"
+        
+        pct = (len(completed) / len(self.ALL_PHASES)) * 100
+        print(f"\r{bar} {pct:.0f}% - {current or 'Starting...'}", end="", flush=True)
+        if current == "COMPLETE" or pct == 100:
+            print()  # Newline when done
+            
+    def get_summary(self) -> Dict[str, Any]:
+        """Get workflow summary."""
+        completed = [p for p in self.phases if p["status"] == "completed"]
+        errors = [p for p in self.phases if p["status"] == "error"]
+        total_duration = sum(p.get("duration_ms", 0) or 0 for p in self.phases)
+        
+        return {
+            "cycle_id": self.cycle_id,
+            "agent_id": self.agent_id,
+            "started_at": self.started_at.isoformat(),
+            "current_phase": self.current_phase,
+            "phases_completed": len(completed),
+            "phases_total": len(self.phases),
+            "errors": len(errors),
+            "total_duration_ms": total_duration,
+            "phase_details": self.phases
+        }
 
 
 # =============================================================================
@@ -217,7 +402,7 @@ When you've completed all actions for this cycle, provide a summary of:
 
 
 class TradingAgent:
-    """AI Trading Agent using Claude API."""
+    """AI Trading Agent using Claude API with workflow tracking."""
 
     def __init__(
         self,
@@ -232,6 +417,7 @@ class TradingAgent:
         """
         self.config = self._load_config(config_path)
         self.paper_trading = paper_trading
+        self.tracker: Optional[WorkflowTracker] = None
 
         # Initialize Claude client
         self.client = anthropic.Anthropic(
@@ -241,59 +427,31 @@ class TradingAgent:
             "model", "claude-sonnet-4-20250514"
         )
         self.max_tokens = self.config.get("claude", {}).get("max_tokens", 4096)
-        self.max_iterations = self.config.get("claude", {}).get("max_iterations", 20)
+        self.max_iterations = self.config.get("claude", {}).get("max_iterations", 15)
 
-        # Initialize services
-        self._init_services()
+        # Initialize components
+        init_database()
+        init_moomoo_client(paper_trading=paper_trading)
 
-        # Cycle tracking
-        self.cycle_id: str | None = None
-        self.executor: Any = None
+        self.cycle_id = None
+        self.executor = None
+
+        logger.info(f"Agent initialized: model={self.model}, paper={paper_trading}")
 
     def _load_config(self, config_path: str) -> dict:
         """Load configuration from YAML file."""
         try:
-            with open(config_path) as f:
+            with open(config_path, "r") as f:
                 return yaml.safe_load(f)
+        except FileNotFoundError:
+            logger.warning(f"Config file not found: {config_path}, using defaults")
+            return {}
         except Exception as e:
-            logger.warning(f"Could not load config from {config_path}: {e}")
+            logger.error(f"Error loading config: {e}")
             return {}
 
-    def _init_services(self):
-        """Initialize all services."""
-        # Database
-        try:
-            init_database()
-            logger.info("Database initialized")
-        except Exception as e:
-            logger.error(f"Database initialization failed: {e}")
-
-        # Moomoo - Use environment variables directly
-        try:
-            host = os.environ.get("MOOMOO_HOST", "127.0.0.1")
-            port = int(os.environ.get("MOOMOO_PORT", "11111"))
-            trade_password = os.environ.get("MOOMOO_TRADE_PWD", "")
-
-            client = init_moomoo_client(
-                host=host,
-                port=port,
-                trade_password=trade_password,
-                paper_trading=True,
-            )
-            logger.info(f"Moomoo client initialized and connected (port {port})")
-        except Exception as e:
-            logger.error(f"Moomoo initialization failed: {e}")
-
-        # Alerts
-        try:
-            alerts_config = self.config.get("alerts", {})
-            get_alert_sender().start()
-            logger.info("Alert sender initialized")
-        except Exception as e:
-            logger.warning(f"Alert sender initialization failed: {e}")
-
     def run_cycle(self) -> dict:
-        """Run one trading cycle.
+        """Run one trading cycle with workflow tracking.
 
         Returns:
             Cycle summary dictionary
@@ -301,31 +459,53 @@ class TradingAgent:
         # Generate cycle ID
         self.cycle_id = f"hk_{datetime.now(HK_TZ).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
 
+        # Initialize workflow tracker
+        self.tracker = WorkflowTracker(self.cycle_id, "intl_claude")
+        
+        # Run async workflow
+        return asyncio.run(self._run_cycle_async())
+        
+    async def _run_cycle_async(self) -> dict:
+        """Async implementation of the trading cycle."""
         logger.info(f"Starting cycle: {self.cycle_id}")
-
-        # Record cycle start
+        
         db = get_database()
+        alert_callback = create_alert_callback()
+        
+        # =================================================================
+        # PHASE 1: INIT
+        # =================================================================
+        await self.tracker.start_phase("INIT", "Agent initializing")
+        
         try:
             db.start_agent_cycle(self.cycle_id, "HKEX")
         except Exception as e:
             logger.error(f"Failed to start cycle in DB: {e}")
-
-        # Create tool executor (pass agent=self for position monitoring)
-        alert_callback = create_alert_callback()
+            
         self.executor = create_tool_executor(
             cycle_id=self.cycle_id,
             alert_callback=alert_callback,
             agent=self,
         )
+        
+        await self.tracker.complete_phase("INIT", 
+            model=self.model, 
+            paper_trading=self.paper_trading
+        )
 
-        # Build initial context
+        # Build context and run
         context = self._build_context()
-
-        # Run agent loop
         messages = [{"role": "user", "content": context}]
         tools_called = []
         final_response = ""
         error = None
+        
+        # Track what phase we're in based on tool calls
+        current_workflow_phase = "PORTFOLIO"  # First expected action
+        phase_started = False
+        candidates_count = 0
+        analyzed_count = 0
+        trades_executed = 0
 
         try:
             for iteration in range(self.max_iterations):
@@ -357,11 +537,33 @@ class TradingAgent:
                             final_response = block.text
                     break
 
-                # Execute tool calls
+                # Execute tool calls and track workflow phases
                 tool_results = []
                 for tool_block in tool_use_blocks:
                     tool_name = tool_block.name
                     tool_input = tool_block.input
+
+                    # =============================================================
+                    # UPDATE WORKFLOW PHASE BASED ON TOOL BEING CALLED
+                    # =============================================================
+                    new_phase = self._tool_to_phase(tool_name, current_workflow_phase)
+                    
+                    if new_phase != current_workflow_phase:
+                        # Complete previous phase
+                        if phase_started:
+                            if current_workflow_phase == "SCAN":
+                                await self.tracker.complete_phase(current_workflow_phase, candidates=candidates_count)
+                            elif current_workflow_phase == "ANALYZE":
+                                await self.tracker.complete_phase(current_workflow_phase, analyzed=analyzed_count)
+                            elif current_workflow_phase == "EXECUTE":
+                                await self.tracker.complete_phase(current_workflow_phase, trades=trades_executed)
+                            else:
+                                await self.tracker.complete_phase(current_workflow_phase)
+                        
+                        # Start new phase
+                        current_workflow_phase = new_phase
+                        await self.tracker.start_phase(new_phase, f"Running {tool_name}")
+                        phase_started = True
 
                     logger.info(f"Tool call: {tool_name}")
                     tools_called.append({
@@ -371,6 +573,15 @@ class TradingAgent:
 
                     # Execute
                     result = self.executor.execute(tool_name, tool_input)
+                    
+                    # Track counts for phase details
+                    if tool_name == "scan_market" and isinstance(result, dict):
+                        candidates_count = len(result.get("candidates", []))
+                    elif tool_name in ["get_quote", "get_technicals", "detect_patterns", "get_news"]:
+                        analyzed_count += 1
+                    elif tool_name == "execute_trade" and isinstance(result, dict):
+                        if result.get("status") == "filled" or result.get("order_id"):
+                            trades_executed += 1
 
                     tool_results.append({
                         "type": "tool_result",
@@ -388,20 +599,30 @@ class TradingAgent:
         except Exception as e:
             logger.error(f"Cycle error: {e}", exc_info=True)
             error = str(e)
+            await self.tracker.error_phase(current_workflow_phase, error)
 
-            # Send error alert
             alert_callback(
                 "critical",
                 "Agent Cycle Error",
                 f"Cycle {self.cycle_id} failed:\n{error}",
             )
 
+        # =================================================================
+        # PHASE 9: LOG
+        # =================================================================
+        if not error:
+            # Complete the last active phase
+            if phase_started:
+                await self.tracker.complete_phase(current_workflow_phase)
+                
+            await self.tracker.start_phase("LOG", "Recording decisions")
+
         # Get summary
         summary = self.executor.get_summary()
 
-        # Calculate API usage (approximate)
-        api_tokens = len(str(messages)) // 4  # Rough estimate
-        api_cost = api_tokens * 0.000003  # Claude Sonnet pricing estimate
+        # Calculate API usage
+        api_tokens = len(str(messages)) // 4
+        api_cost = api_tokens * 0.000003
 
         # Record cycle completion
         try:
@@ -417,10 +638,39 @@ class TradingAgent:
         except Exception as e:
             logger.error(f"Failed to complete cycle in DB: {e}")
 
+        if not error:
+            await self.tracker.complete_phase("LOG", 
+                tools_called=len(tools_called),
+                api_cost=round(api_cost, 4)
+            )
+
+        # =================================================================
+        # PHASE 10: COMPLETE
+        # =================================================================
+        if not error:
+            await self.tracker.start_phase("COMPLETE", "Cycle finished")
+            await self.tracker.complete_phase("COMPLETE",
+                trades_executed=summary["trades_executed"],
+                decisions_logged=summary.get("decisions_logged", 0),
+                duration_sec=int((datetime.now(HK_TZ) - self.tracker.started_at).total_seconds())
+            )
+
+        # Disconnect tracker
+        await self.tracker.disconnect()
+
         logger.info(
             f"Cycle completed: {summary['trades_executed']} trades, "
             f"{len(tools_called)} tool calls"
         )
+        
+        # Print final workflow summary
+        print("\n" + "=" * 60)
+        print("WORKFLOW SUMMARY")
+        print("=" * 60)
+        wf_summary = self.tracker.get_summary()
+        print(f"Phases completed: {wf_summary['phases_completed']}/{len(self.tracker.ALL_PHASES)}")
+        print(f"Total duration: {wf_summary['total_duration_ms']}ms")
+        print(f"Errors: {wf_summary['errors']}")
 
         return {
             "cycle_id": self.cycle_id,
@@ -431,7 +681,36 @@ class TradingAgent:
             "api_cost_usd": round(api_cost, 4),
             "error": error,
             "final_response": final_response[:500] if final_response else None,
+            "workflow": wf_summary,
         }
+        
+    def _tool_to_phase(self, tool_name: str, current_phase: str) -> str:
+        """Map tool name to workflow phase."""
+        phase_map = {
+            "get_portfolio": "PORTFOLIO",
+            "scan_market": "SCAN",
+            "get_quote": "ANALYZE",
+            "get_technicals": "ANALYZE",
+            "detect_patterns": "ANALYZE",
+            "get_news": "ANALYZE",
+            "check_risk": "VALIDATE",
+            "execute_trade": "EXECUTE",
+            "close_position": "EXECUTE",
+            "close_all": "EXECUTE",
+            "send_alert": "LOG",
+            "log_decision": "LOG",
+        }
+        
+        new_phase = phase_map.get(tool_name, current_phase)
+        
+        # Don't go backwards in phases
+        phase_order = self.tracker.ALL_PHASES
+        current_idx = phase_order.index(current_phase) if current_phase in phase_order else 0
+        new_idx = phase_order.index(new_phase) if new_phase in phase_order else current_idx
+        
+        if new_idx >= current_idx:
+            return new_phase
+        return current_phase
 
     def _build_context(self) -> str:
         """Build initial context for Claude."""
@@ -509,15 +788,13 @@ def main():
         action="store_true",
         help="Run even if market is closed",
     )
-    # Note: --skip-preflight and --refresh-status removed in v2.0.0
-    # These were for IBGA checks which are no longer needed with Futu
     args = parser.parse_args()
 
     # Create logs directory
     os.makedirs("logs", exist_ok=True)
 
     logger.info("=" * 60)
-    logger.info("Catalyst Trading Agent - HKEX")
+    logger.info("Catalyst Trading Agent - HKEX (v2.3.0 with Workflow Tracking)")
     logger.info("=" * 60)
 
     # Initialize agent
