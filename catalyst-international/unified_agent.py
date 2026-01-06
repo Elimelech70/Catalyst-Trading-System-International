@@ -550,6 +550,7 @@ class UnifiedAgent:
                 self.tool_executor = create_tool_executor(
                     cycle_id=self.cycle_id,
                     alert_callback=get_alert_sender(),
+                    agent=self,  # Enable position monitoring
                 )
                 self.tools = TOOLS
                 

@@ -310,11 +310,12 @@ class TradingAgent:
         except Exception as e:
             logger.error(f"Failed to start cycle in DB: {e}")
 
-        # Create tool executor
+        # Create tool executor (pass agent=self for position monitoring)
         alert_callback = create_alert_callback()
         self.executor = create_tool_executor(
             cycle_id=self.cycle_id,
             alert_callback=alert_callback,
+            agent=self,
         )
 
         # Build initial context

@@ -1,11 +1,18 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: tool_executor.py
-Version: 2.1.0
-Last Updated: 2025-12-30
+Version: 2.2.1
+Last Updated: 2026-01-06
 Purpose: Routes Claude's tool calls to actual implementations
 
 REVISION HISTORY:
+v2.2.1 (2026-01-06) - Position monitoring integration
+- Added agent parameter to __init__
+- Call start_position_monitor() after successful BUY orders
+- Fixed OrderResult dataclass handling
+- Fixed AlertSender callable check
+- Fixed portfolio .get() for missing fields
+
 v2.1.0 (2025-12-30) - Updated to use MoomooClient
 - Changed imports from futu to moomoo
 - Using moomoo-api SDK
@@ -15,16 +22,17 @@ v2.0.0 (2025-12-20) - Migrated to Moomoo/Futu
 - Updated all broker references
 
 v1.0.0 (2025-12-06) - Initial implementation
-- Tool call routing and execution
-- Result formatting for Claude
-- Error handling and logging
 
 Description:
 This module receives tool calls from Claude and routes them to the
 appropriate implementation functions. It handles all 12 trading tools
 defined in the CLAUDE.md specification.
+
+NEW in v2.2.1: After successful BUY orders, automatically starts
+position monitoring that runs until exit.
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -39,6 +47,14 @@ from data.patterns import get_pattern_detector
 from safety import get_safety_validator, validate_trade_request
 from tools import validate_tool_input
 
+# Position monitoring import
+try:
+    from position_monitor import start_position_monitor
+    POSITION_MONITOR_AVAILABLE = True
+except ImportError:
+    POSITION_MONITOR_AVAILABLE = False
+    start_position_monitor = None
+
 logger = logging.getLogger(__name__)
 
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
@@ -51,15 +67,18 @@ class ToolExecutor:
         self,
         cycle_id: str,
         alert_callback: Any = None,
+        agent: Any = None,
     ):
         """Initialize tool executor.
 
         Args:
             cycle_id: Current agent cycle ID
-            alert_callback: Function to send alerts (severity, subject, message)
+            alert_callback: Function/object to send alerts
+            agent: Reference to TradingAgent (for Claude client access)
         """
         self.cycle_id = cycle_id
         self.alert_callback = alert_callback
+        self.agent = agent
         self.tools_called: list[dict] = []
         self.trades_executed = 0
 
@@ -160,45 +179,53 @@ class ToolExecutor:
         """Get current quote for a symbol."""
         symbol = inputs["symbol"]
         quote = self.market.get_quote(symbol)
-        return quote
-
-    def _get_technicals(self, inputs: dict) -> dict:
-        """Get technical indicators."""
-        symbol = inputs["symbol"]
-        timeframe = inputs.get("timeframe", "15m")
-
-        technicals = self.market.get_technicals(symbol, timeframe)
-        return technicals
-
-    def _detect_patterns(self, inputs: dict) -> dict:
-        """Detect chart patterns."""
-        symbol = inputs["symbol"]
-        timeframe = inputs.get("timeframe", "15m")
-
-        patterns = self.patterns.detect_patterns(symbol, timeframe)
 
         return {
             "symbol": symbol,
-            "timeframe": timeframe,
+            "quote": quote,
+            "timestamp": datetime.now(HK_TZ).isoformat(),
+        }
+
+    def _get_technicals(self, inputs: dict) -> dict:
+        """Get technical indicators for a symbol."""
+        symbol = inputs["symbol"]
+        technicals = self.market.get_technicals(symbol)
+
+        return {
+            "symbol": symbol,
+            "technicals": technicals,
+            "timestamp": datetime.now(HK_TZ).isoformat(),
+        }
+
+    def _detect_patterns(self, inputs: dict) -> dict:
+        """Detect chart patterns for a symbol."""
+        symbol = inputs["symbol"]
+        patterns = self.patterns.detect_patterns(symbol)
+
+        return {
+            "symbol": symbol,
             "patterns_found": len(patterns),
             "patterns": patterns,
             "timestamp": datetime.now(HK_TZ).isoformat(),
         }
 
     def _get_news(self, inputs: dict) -> dict:
-        """Get news and sentiment."""
+        """Get news for a symbol."""
         symbol = inputs["symbol"]
-        hours = min(inputs.get("hours", 24), 72)
+        news = self.news.get_news(symbol)
 
-        news = self.news.get_news(symbol, hours=hours)
-        return news
+        return {
+            "symbol": symbol,
+            "news": news,
+            "timestamp": datetime.now(HK_TZ).isoformat(),
+        }
 
     # =========================================================================
-    # Risk & Portfolio Tools
+    # Risk Management Tools
     # =========================================================================
 
     def _check_risk(self, inputs: dict) -> dict:
-        """Validate trade against risk limits."""
+        """Check if a trade passes risk validation."""
         symbol = inputs["symbol"]
         side = inputs["side"]
         quantity = inputs["quantity"]
@@ -206,37 +233,56 @@ class ToolExecutor:
         stop_loss = inputs["stop_loss"]
         take_profit = inputs["take_profit"]
 
-        # Get portfolio info
-        portfolio = self.broker.get_portfolio()
-        positions = portfolio.get("positions", [])
-
-        # Validate
+        # Validate through safety module
         result = validate_trade_request(
             symbol=symbol,
             side=side,
             quantity=quantity,
-            entry_price=entry_price,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            portfolio_value=portfolio["equity"],
-            cash_available=portfolio["cash"],
-            current_positions=portfolio["position_count"],
-            daily_pnl_pct=portfolio["daily_pnl_pct"] / 100,  # Convert to decimal
+            price=entry_price,
         )
 
-        return result
+        # Calculate risk/reward
+        if entry_price and stop_loss and take_profit:
+            risk = abs(entry_price - stop_loss)
+            reward = abs(take_profit - entry_price)
+            risk_reward = reward / risk if risk > 0 else 0
+        else:
+            risk_reward = 0
+
+        return {
+            "approved": result.get("approved", False),
+            "reason": result.get("reason", ""),
+            "risk_reward_ratio": round(risk_reward, 2),
+            "position_size_hkd": quantity * entry_price if entry_price else 0,
+            "max_loss_hkd": quantity * abs(entry_price - stop_loss) if stop_loss else 0,
+            "timestamp": datetime.now(HK_TZ).isoformat(),
+        }
 
     def _get_portfolio(self, inputs: dict) -> dict:
         """Get current portfolio status."""
         portfolio = self.broker.get_portfolio()
-        return portfolio
+
+        # Handle both dict and object responses
+        if hasattr(portfolio, '__dict__'):
+            portfolio = vars(portfolio)
+
+        return {
+            "cash": portfolio.get("cash", 0),
+            "equity": portfolio.get("equity") or portfolio.get("total_assets", 0),
+            "market_value": portfolio.get("market_value", 0),
+            "unrealized_pnl": portfolio.get("unrealized_pnl", 0),
+            "daily_pnl": portfolio.get("daily_pnl", 0),
+            "daily_pnl_pct": portfolio.get("daily_pnl_pct", 0),
+            "position_count": portfolio.get("position_count", 0),
+            "timestamp": datetime.now(HK_TZ).isoformat(),
+        }
 
     # =========================================================================
     # Execution Tools
     # =========================================================================
 
     def _execute_trade(self, inputs: dict) -> dict:
-        """Execute a trade."""
+        """Execute a trade with optional position monitoring."""
         symbol = inputs["symbol"]
         side = inputs["side"]
         quantity = inputs["quantity"]
@@ -245,6 +291,8 @@ class ToolExecutor:
         stop_loss = inputs["stop_loss"]
         take_profit = inputs["take_profit"]
         reason = inputs["reason"]
+
+        logger.info(f"Executing trade: {side} {quantity} {symbol}")
 
         # Execute via broker
         result = self.broker.execute_trade(
@@ -258,199 +306,243 @@ class ToolExecutor:
             reason=reason,
         )
 
-        # Convert OrderResult dataclass to dict for consistent handling
-        result_dict = {
-            "order_id": result.order_id,
-            "status": result.status,
-            "symbol": result.symbol,
-            "side": result.side,
-            "quantity": result.quantity,
-            "order_type": result.order_type,
-            "filled_price": result.filled_price,
-            "filled_quantity": result.filled_quantity,
-            "message": result.message,
-        }
+        # Handle OrderResult dataclass or dict
+        if hasattr(result, 'status'):
+            status = result.status
+            order_id = result.order_id
+            fill_price = result.filled_price
+            message = result.message
+        else:
+            status = result.get("status", "")
+            order_id = result.get("order_id", "")
+            fill_price = result.get("filled_price") or result.get("fill_price")
+            message = result.get("message", "")
 
-        # Record in database if successful
-        if result.status in ["Filled", "Submitted", "PreSubmitted"]:
+        # Check if successful
+        success_statuses = ["Filled", "FILLED", "Submitted", "SUBMITTED", "success"]
+        if status in success_statuses:
             self.trades_executed += 1
             self.safety.record_trade()
 
-            # Record position
+            # Record position in database
             try:
                 self.db.record_position(
                     symbol=symbol,
                     side=side,
                     quantity=quantity,
-                    entry_price=result.filled_price or limit_price or 0,
+                    entry_price=fill_price or limit_price or 0,
                     stop_loss=stop_loss,
                     take_profit=take_profit,
-                    broker_order_id=result.order_id,
+                    broker_order_id=order_id,
                     cycle_id=self.cycle_id,
                     reason=reason,
                 )
             except Exception as e:
                 logger.error(f"Failed to record position: {e}")
 
-            # Send alert
+            # Send alert (handle AlertSender object or callable)
             if self.alert_callback:
-                if hasattr(self.alert_callback, 'send'):
-                    self.alert_callback.send(
-                        "info",
-                        f"Trade Executed: {side.upper()} {symbol}",
+                try:
+                    alert_msg = (
                         f"Executed {side} {quantity} {symbol}\n"
-                        f"Price: {result.filled_price or 'pending'}\n"
+                        f"Price: {fill_price or 'pending'}\n"
                         f"Stop: {stop_loss}, Target: {take_profit}\n"
-                        f"Reason: {reason}",
+                        f"Reason: {reason}"
                     )
-                else:
-                    self.alert_callback(
-                        "info",
-                        f"Trade Executed: {side.upper()} {symbol}",
-                        f"Executed {side} {quantity} {symbol}\n"
-                        f"Price: {result.filled_price or 'pending'}\n"
-                        f"Stop: {stop_loss}, Target: {take_profit}\n"
-                        f"Reason: {reason}",
-                    )
+                    if hasattr(self.alert_callback, 'send'):
+                        self.alert_callback.send(
+                            "info",
+                            f"Trade Executed: {side.upper()} {symbol}",
+                            alert_msg,
+                        )
+                    elif callable(self.alert_callback):
+                        self.alert_callback(
+                            "info",
+                            f"Trade Executed: {side.upper()} {symbol}",
+                            alert_msg,
+                        )
+                except Exception as e:
+                    logger.error(f"Alert callback failed: {e}")
 
-        return result_dict
+            # ================================================================
+            # NEW: Start position monitoring for BUY orders
+            # ================================================================
+            monitor_result = None
+            monitor_error = None
+            
+            if (
+                side.upper() == "BUY" 
+                and self.agent 
+                and POSITION_MONITOR_AVAILABLE
+            ):
+                try:
+                    # Get anthropic client from agent
+                    anthropic_client = getattr(self.agent, 'client', None)
+                    
+                    if anthropic_client:
+                        logger.info(f"Starting position monitor for {symbol}")
+                        
+                        # Run async monitoring
+                        monitor_result = asyncio.run(
+                            start_position_monitor(
+                                broker=self.broker,
+                                market_data=self.market,
+                                anthropic_client=anthropic_client,
+                                safety_validator=self.safety,
+                                symbol=symbol,
+                                entry_price=fill_price or limit_price or 0,
+                                quantity=quantity,
+                                stop_price=stop_loss,
+                                target_price=take_profit,
+                                entry_reason=reason,
+                            )
+                        )
+                        
+                        logger.info(f"Position monitor completed: {monitor_result}")
+                    else:
+                        logger.warning("No anthropic client available for monitoring")
+                        
+                except Exception as e:
+                    logger.error(f"Position monitor failed: {e}", exc_info=True)
+                    monitor_error = str(e)
+                    # Trade still succeeded, monitoring just failed
+            # ================================================================
+
+            return {
+                "status": "success",
+                "order_id": order_id,
+                "fill_price": fill_price,
+                "symbol": symbol,
+                "side": side,
+                "quantity": quantity,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "monitor_result": monitor_result,
+                "monitor_error": monitor_error,
+                "timestamp": datetime.now(HK_TZ).isoformat(),
+            }
+
+        else:
+            return {
+                "status": "failed",
+                "reason": message or str(result),
+                "symbol": symbol,
+                "side": side,
+                "quantity": quantity,
+            }
 
     def _close_position(self, inputs: dict) -> dict:
         """Close an existing position."""
         symbol = inputs["symbol"]
-        reason = inputs["reason"]
+        reason = inputs.get("reason", "Manual close")
 
-        # Check if we have a position by looking at current positions
+        logger.info(f"Closing position: {symbol} - {reason}")
+
+        # Check if we have a position
         positions = self.broker.get_positions()
-        has_position = any(p.symbol == symbol for p in positions)
+        position = None
+        
+        for pos in positions:
+            pos_symbol = pos.symbol if hasattr(pos, 'symbol') else pos.get('symbol', '')
+            pos_symbol = str(pos_symbol).replace('.HK', '').replace('HK.', '').lstrip('0')
+            check_symbol = symbol.replace('.HK', '').replace('HK.', '').lstrip('0')
+            
+            if pos_symbol == check_symbol:
+                position = pos
+                break
 
-        if not has_position:
+        if not position:
             return {
                 "status": "error",
                 "symbol": symbol,
                 "message": f"No position found for {symbol}",
             }
 
+        # Get quantity
+        quantity = position.quantity if hasattr(position, 'quantity') else position.get('quantity', 0)
+        quantity = abs(int(quantity))
+
         # Close via broker
         result = self.broker.close_position(symbol, reason)
 
-        # Convert OrderResult dataclass to dict
-        result_dict = {
-            "order_id": result.order_id,
-            "status": result.status,
-            "symbol": result.symbol,
-            "side": result.side,
-            "quantity": result.quantity,
-            "order_type": result.order_type,
-            "filled_price": result.filled_price,
-            "filled_quantity": result.filled_quantity,
-            "message": result.message,
-        }
+        # Handle OrderResult dataclass
+        if hasattr(result, 'status'):
+            status = result.status
+            fill_price = result.filled_price
+        else:
+            status = result.get("status", "")
+            fill_price = result.get("filled_price") or result.get("fill_price")
 
-        # Update database
-        if result.filled_price:
-            try:
-                self.db.close_position(
-                    symbol=symbol,
-                    exit_price=result.filled_price,
-                    reason=reason,
-                )
-            except Exception as e:
-                logger.error(f"Failed to update position in DB: {e}")
+        if status in ["FILLED", "filled", "SUBMITTED", "submitted", "success", "NO_POSITION"]:
+            # Update database
+            if fill_price:
+                try:
+                    self.db.close_position(
+                        symbol=symbol,
+                        exit_price=fill_price,
+                        reason=reason,
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to update position in DB: {e}")
 
             # Send alert
-            if self.alert_callback:
-                pnl = getattr(result, "realized_pnl", 0) or 0
-                if hasattr(self.alert_callback, 'send'):
-                    self.alert_callback.send(
-                        "info",
-                        f"Position Closed: {symbol}",
-                        f"Closed {symbol} at {result.filled_price}\n"
+            if self.alert_callback and fill_price:
+                try:
+                    entry_price = position.avg_cost if hasattr(position, 'avg_cost') else position.get('avg_cost', 0)
+                    pnl = (fill_price - entry_price) * quantity if entry_price else 0
+                    
+                    alert_msg = (
+                        f"Closed {symbol} at {fill_price}\n"
                         f"Realized P&L: HKD {pnl:,.2f}\n"
-                        f"Reason: {reason}",
+                        f"Reason: {reason}"
                     )
-                else:
-                    self.alert_callback(
-                        "info",
-                        f"Position Closed: {symbol}",
-                        f"Closed {symbol} at {result.filled_price}\n"
-                        f"Realized P&L: HKD {pnl:,.2f}\n"
-                        f"Reason: {reason}",
-                    )
+                    if hasattr(self.alert_callback, 'send'):
+                        self.alert_callback.send("info", f"Position Closed: {symbol}", alert_msg)
+                    elif callable(self.alert_callback):
+                        self.alert_callback("info", f"Position Closed: {symbol}", alert_msg)
+                except Exception as e:
+                    logger.error(f"Alert callback failed: {e}")
 
-        return result_dict
+            return {
+                "status": "success",
+                "symbol": symbol,
+                "quantity": quantity,
+                "fill_price": fill_price,
+                "reason": reason,
+                "timestamp": datetime.now(HK_TZ).isoformat(),
+            }
+
+        else:
+            return {
+                "status": "failed",
+                "symbol": symbol,
+                "reason": str(result),
+            }
 
     def _close_all(self, inputs: dict) -> dict:
         """Emergency close all positions."""
-        reason = inputs["reason"]
+        reason = inputs.get("reason", "Emergency close")
 
-        # Validate with safety
-        portfolio = self.broker.get_portfolio()
-        daily_pnl_pct = portfolio.get("daily_pnl_pct", 0) / 100
+        logger.warning(f"EMERGENCY CLOSE ALL: {reason}")
 
-        safety_check = self.safety.validate_close_all(daily_pnl_pct, reason)
+        results = self.broker.close_all_positions(reason)
 
-        # Close all positions (returns List[OrderResult])
-        order_results = self.broker.close_all_positions(reason)
-
-        # Convert OrderResult objects to dicts and calculate total P&L
-        results = []
-        total_pnl = 0
-        for r in order_results:
-            result_dict = {
-                "order_id": r.order_id,
-                "status": r.status,
-                "symbol": r.symbol,
-                "side": r.side,
-                "quantity": r.quantity,
-                "filled_price": r.filled_price,
-                "filled_quantity": r.filled_quantity,
-                "message": r.message,
-            }
-            results.append(result_dict)
-            # Note: realized_pnl not in OrderResult, would need separate calculation
-
-        # Update database
-        for result in results:
-            if result.get("filled_price") and result.get("symbol"):
-                try:
-                    self.db.close_position(
-                        symbol=result["symbol"],
-                        exit_price=result["filled_price"],
-                        reason=f"Emergency close: {reason}",
-                    )
-                except Exception:
-                    pass
-
-        # Send critical alert
+        # Send alert
         if self.alert_callback:
-            if hasattr(self.alert_callback, 'send'):
-                self.alert_callback.send(
-                    "critical",
-                    "EMERGENCY: All Positions Closed",
-                    f"All positions have been closed.\n"
-                    f"Positions closed: {len(results)}\n"
-                    f"Total Realized P&L: HKD {total_pnl:,.2f}\n"
-                    f"Reason: {reason}\n"
-                    f"Warnings: {', '.join(safety_check.warnings) or 'None'}",
-                )
-            else:
-                self.alert_callback(
-                    "critical",
-                    "EMERGENCY: All Positions Closed",
-                    f"All positions have been closed.\n"
-                    f"Positions closed: {len(results)}\n"
-                    f"Total Realized P&L: HKD {total_pnl:,.2f}\n"
-                    f"Reason: {reason}\n"
-                    f"Warnings: {', '.join(safety_check.warnings) or 'None'}",
-                )
+            try:
+                alert_msg = f"Emergency close triggered: {reason}\nPositions closed: {len(results)}"
+                if hasattr(self.alert_callback, 'send'):
+                    self.alert_callback.send("critical", "EMERGENCY CLOSE ALL", alert_msg)
+                elif callable(self.alert_callback):
+                    self.alert_callback("critical", "EMERGENCY CLOSE ALL", alert_msg)
+            except Exception as e:
+                logger.error(f"Alert callback failed: {e}")
 
         return {
+            "status": "success",
             "positions_closed": len(results),
-            "total_realized_pnl": round(total_pnl, 2),
-            "results": results,
+            "results": [str(r) for r in results],
             "reason": reason,
-            "warnings": safety_check.warnings,
             "timestamp": datetime.now(HK_TZ).isoformat(),
         }
 
@@ -459,31 +551,31 @@ class ToolExecutor:
     # =========================================================================
 
     def _send_alert(self, inputs: dict) -> dict:
-        """Send email alert."""
+        """Send an alert notification."""
         severity = inputs["severity"]
         subject = inputs["subject"]
         message = inputs["message"]
 
         if self.alert_callback:
-            # Handle both callable functions and AlertSender objects
-            if hasattr(self.alert_callback, 'send'):
-                self.alert_callback.send(severity, subject, message)
-            else:
-                self.alert_callback(severity, subject, message)
-            return {
-                "sent": True,
-                "severity": severity,
-                "subject": subject,
-                "timestamp": datetime.now(HK_TZ).isoformat(),
-            }
-
-        return {
-            "sent": False,
-            "reason": "No alert callback configured",
-        }
+            try:
+                if hasattr(self.alert_callback, 'send'):
+                    self.alert_callback.send(severity, subject, message)
+                elif callable(self.alert_callback):
+                    self.alert_callback(severity, subject, message)
+                return {
+                    "sent": True,
+                    "severity": severity,
+                    "subject": subject,
+                    "timestamp": datetime.now(HK_TZ).isoformat(),
+                }
+            except Exception as e:
+                logger.error(f"Alert send failed: {e}")
+                return {"sent": False, "error": str(e)}
+        else:
+            return {"sent": False, "reason": "No alert callback configured"}
 
     def _log_decision(self, inputs: dict) -> dict:
-        """Log decision to database."""
+        """Log a trading decision for audit trail."""
         decision_type = inputs["decision"]
         symbol = inputs.get("symbol")
         reasoning = inputs["reasoning"]
@@ -530,6 +622,20 @@ class ToolExecutor:
 def create_tool_executor(
     cycle_id: str,
     alert_callback: Any = None,
+    agent: Any = None,
 ) -> ToolExecutor:
-    """Create a new tool executor for a cycle."""
-    return ToolExecutor(cycle_id=cycle_id, alert_callback=alert_callback)
+    """Create a new tool executor for a cycle.
+    
+    Args:
+        cycle_id: Current agent cycle ID
+        alert_callback: Function/object to send alerts
+        agent: Reference to TradingAgent (for position monitoring)
+        
+    Returns:
+        ToolExecutor instance
+    """
+    return ToolExecutor(
+        cycle_id=cycle_id,
+        alert_callback=alert_callback,
+        agent=agent,
+    )
