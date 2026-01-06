@@ -1,0 +1,53 @@
+{
+  "timestamp": "2026-01-06T11:43:12.928586+08:00",
+  "portfolio": {
+    "cash": 467966.903,
+    "equity": 1022566.903,
+    "position_count": 3
+  },
+  "positions": [
+    {
+      "symbol": "2382",
+      "quantity": 2700,
+      "avg_cost": 64.95,
+      "current_price": 67.25,
+      "unrealized_pnl": 6210.0,
+      "pnl_pct": 3.54,
+      "value": 181575.0,
+      "status": "\ud83d\udfe2 PROFITABLE",
+      "rsi": 50.72,
+      "stop_price": 63.651,
+      "target_price": 67.548
+    },
+    {
+      "symbol": "981",
+      "quantity": 2500,
+      "avg_cost": 70.55,
+      "current_price": 77.45,
+      "unrealized_pnl": 17250.0,
+      "pnl_pct": 9.78,
+      "value": 193625.0,
+      "status": "\ud83c\udfaf NEAR TARGET",
+      "rsi": 36.25,
+      "stop_price": 69.139,
+      "target_price": 73.372
+    },
+    {
+      "symbol": "1810",
+      "quantity": 4600,
+      "avg_cost": 38.88,
+      "current_price": 39.0,
+      "unrealized_pnl": 552.0,
+      "pnl_pct": 0.31,
+      "value": 179400.0,
+      "status": "\u26aa FLAT",
+      "rsi": 53.66,
+      "stop_price": 38.1024,
+      "target_price": 40.4352
+    }
+  ],
+  "totals": {
+    "total_value": 554600.0,
+    "total_unrealized_pnl": 24012.0
+  }
+}
