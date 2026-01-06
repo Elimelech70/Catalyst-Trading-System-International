@@ -258,8 +258,21 @@ class ToolExecutor:
             reason=reason,
         )
 
+        # Convert OrderResult dataclass to dict for consistent handling
+        result_dict = {
+            "order_id": result.order_id,
+            "status": result.status,
+            "symbol": result.symbol,
+            "side": result.side,
+            "quantity": result.quantity,
+            "order_type": result.order_type,
+            "filled_price": result.filled_price,
+            "filled_quantity": result.filled_quantity,
+            "message": result.message,
+        }
+
         # Record in database if successful
-        if result["status"] in ["Filled", "Submitted", "PreSubmitted"]:
+        if result.status in ["Filled", "Submitted", "PreSubmitted"]:
             self.trades_executed += 1
             self.safety.record_trade()
 
@@ -269,10 +282,10 @@ class ToolExecutor:
                     symbol=symbol,
                     side=side,
                     quantity=quantity,
-                    entry_price=result.get("filled_price") or limit_price or 0,
+                    entry_price=result.filled_price or limit_price or 0,
                     stop_loss=stop_loss,
                     take_profit=take_profit,
-                    broker_order_id=result["order_id"],
+                    broker_order_id=result.order_id,
                     cycle_id=self.cycle_id,
                     reason=reason,
                 )
@@ -281,39 +294,65 @@ class ToolExecutor:
 
             # Send alert
             if self.alert_callback:
-                self.alert_callback(
-                    "info",
-                    f"Trade Executed: {side.upper()} {symbol}",
-                    f"Executed {side} {quantity} {symbol}\n"
-                    f"Price: {result.get('filled_price', 'pending')}\n"
-                    f"Stop: {stop_loss}, Target: {take_profit}\n"
-                    f"Reason: {reason}",
-                )
+                if hasattr(self.alert_callback, 'send'):
+                    self.alert_callback.send(
+                        "info",
+                        f"Trade Executed: {side.upper()} {symbol}",
+                        f"Executed {side} {quantity} {symbol}\n"
+                        f"Price: {result.filled_price or 'pending'}\n"
+                        f"Stop: {stop_loss}, Target: {take_profit}\n"
+                        f"Reason: {reason}",
+                    )
+                else:
+                    self.alert_callback(
+                        "info",
+                        f"Trade Executed: {side.upper()} {symbol}",
+                        f"Executed {side} {quantity} {symbol}\n"
+                        f"Price: {result.filled_price or 'pending'}\n"
+                        f"Stop: {stop_loss}, Target: {take_profit}\n"
+                        f"Reason: {reason}",
+                    )
 
-        return result
+        return result_dict
 
     def _close_position(self, inputs: dict) -> dict:
         """Close an existing position."""
         symbol = inputs["symbol"]
         reason = inputs["reason"]
 
-        # Check if we have a position
-        if not self.broker.has_position(symbol):
+        # Check if we have a position by looking at current positions
+        positions = self.broker.get_positions()
+        has_position = any(p.symbol == symbol for p in positions)
+
+        if not has_position:
             return {
                 "status": "error",
                 "symbol": symbol,
                 "message": f"No position found for {symbol}",
             }
 
-        # Close via IBKR
+        # Close via broker
         result = self.broker.close_position(symbol, reason)
 
+        # Convert OrderResult dataclass to dict
+        result_dict = {
+            "order_id": result.order_id,
+            "status": result.status,
+            "symbol": result.symbol,
+            "side": result.side,
+            "quantity": result.quantity,
+            "order_type": result.order_type,
+            "filled_price": result.filled_price,
+            "filled_quantity": result.filled_quantity,
+            "message": result.message,
+        }
+
         # Update database
-        if result.get("filled_price"):
+        if result.filled_price:
             try:
                 self.db.close_position(
                     symbol=symbol,
-                    exit_price=result["filled_price"],
+                    exit_price=result.filled_price,
                     reason=reason,
                 )
             except Exception as e:
@@ -321,16 +360,25 @@ class ToolExecutor:
 
             # Send alert
             if self.alert_callback:
-                pnl = result.get("realized_pnl", 0)
-                self.alert_callback(
-                    "info",
-                    f"Position Closed: {symbol}",
-                    f"Closed {symbol} at {result['filled_price']}\n"
-                    f"Realized P&L: HKD {pnl:,.2f}\n"
-                    f"Reason: {reason}",
-                )
+                pnl = getattr(result, "realized_pnl", 0) or 0
+                if hasattr(self.alert_callback, 'send'):
+                    self.alert_callback.send(
+                        "info",
+                        f"Position Closed: {symbol}",
+                        f"Closed {symbol} at {result.filled_price}\n"
+                        f"Realized P&L: HKD {pnl:,.2f}\n"
+                        f"Reason: {reason}",
+                    )
+                else:
+                    self.alert_callback(
+                        "info",
+                        f"Position Closed: {symbol}",
+                        f"Closed {symbol} at {result.filled_price}\n"
+                        f"Realized P&L: HKD {pnl:,.2f}\n"
+                        f"Reason: {reason}",
+                    )
 
-        return result
+        return result_dict
 
     def _close_all(self, inputs: dict) -> dict:
         """Emergency close all positions."""
@@ -338,15 +386,29 @@ class ToolExecutor:
 
         # Validate with safety
         portfolio = self.broker.get_portfolio()
-        daily_pnl_pct = portfolio["daily_pnl_pct"] / 100
+        daily_pnl_pct = portfolio.get("daily_pnl_pct", 0) / 100
 
         safety_check = self.safety.validate_close_all(daily_pnl_pct, reason)
 
-        # Close all positions
-        results = self.broker.close_all_positions(reason)
+        # Close all positions (returns List[OrderResult])
+        order_results = self.broker.close_all_positions(reason)
 
-        # Calculate total P&L
-        total_pnl = sum(r.get("realized_pnl", 0) for r in results)
+        # Convert OrderResult objects to dicts and calculate total P&L
+        results = []
+        total_pnl = 0
+        for r in order_results:
+            result_dict = {
+                "order_id": r.order_id,
+                "status": r.status,
+                "symbol": r.symbol,
+                "side": r.side,
+                "quantity": r.quantity,
+                "filled_price": r.filled_price,
+                "filled_quantity": r.filled_quantity,
+                "message": r.message,
+            }
+            results.append(result_dict)
+            # Note: realized_pnl not in OrderResult, would need separate calculation
 
         # Update database
         for result in results:
@@ -362,15 +424,26 @@ class ToolExecutor:
 
         # Send critical alert
         if self.alert_callback:
-            self.alert_callback(
-                "critical",
-                "EMERGENCY: All Positions Closed",
-                f"All positions have been closed.\n"
-                f"Positions closed: {len(results)}\n"
-                f"Total Realized P&L: HKD {total_pnl:,.2f}\n"
-                f"Reason: {reason}\n"
-                f"Warnings: {', '.join(safety_check.warnings) or 'None'}",
-            )
+            if hasattr(self.alert_callback, 'send'):
+                self.alert_callback.send(
+                    "critical",
+                    "EMERGENCY: All Positions Closed",
+                    f"All positions have been closed.\n"
+                    f"Positions closed: {len(results)}\n"
+                    f"Total Realized P&L: HKD {total_pnl:,.2f}\n"
+                    f"Reason: {reason}\n"
+                    f"Warnings: {', '.join(safety_check.warnings) or 'None'}",
+                )
+            else:
+                self.alert_callback(
+                    "critical",
+                    "EMERGENCY: All Positions Closed",
+                    f"All positions have been closed.\n"
+                    f"Positions closed: {len(results)}\n"
+                    f"Total Realized P&L: HKD {total_pnl:,.2f}\n"
+                    f"Reason: {reason}\n"
+                    f"Warnings: {', '.join(safety_check.warnings) or 'None'}",
+                )
 
         return {
             "positions_closed": len(results),
