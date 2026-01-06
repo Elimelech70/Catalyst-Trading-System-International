@@ -1,11 +1,14 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: tool_executor.py
-Version: 2.2.1
+Version: 2.3.0
 Last Updated: 2026-01-06
 Purpose: Routes Claude's tool calls to actual implementations
 
 REVISION HISTORY:
+v2.3.0 (2026-01-06) - Order logging
+- Added order recording to database after successful trades
+
 v2.2.1 (2026-01-06) - Position monitoring integration
 - Added agent parameter to __init__
 - Call start_position_monitor() after successful BUY orders
@@ -359,6 +362,22 @@ class ToolExecutor:
                 )
             except Exception as e:
                 logger.error(f"Failed to record position: {e}")
+
+            # Record order in database
+            try:
+                self.db.record_order(
+                    symbol=symbol,
+                    side=side,
+                    order_type=order_type.upper() if order_type else "MARKET",
+                    quantity=quantity,
+                    limit_price=limit_price,
+                    filled_quantity=quantity,
+                    filled_price=fill_price,
+                    status="filled",
+                    broker_order_id=order_id,
+                )
+            except Exception as e:
+                logger.error(f"Failed to record order: {e}")
 
             # Send alert (handle AlertSender object or callable)
             if self.alert_callback:

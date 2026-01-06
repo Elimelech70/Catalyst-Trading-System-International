@@ -2,8 +2,8 @@
 PostgreSQL database client for the Catalyst Trading Agent.
 
 Name of file: database.py
-Version: 1.1.0
-Last Updated: 2025-12-30
+Version: 1.2.0
+Last Updated: 2026-01-06
 
 This module handles all database operations including:
 - Agent cycle logging
@@ -12,6 +12,10 @@ This module handles all database operations including:
 - Trade history
 
 REVISION HISTORY:
+v1.2.0 (2026-01-06) - Fix position recording bugs
+- Fixed ON CONFLICT clause to match (symbol, exchange_id) constraint
+- Changed broker_code from 'IBKR' to 'MOOMOO'
+
 v1.1.0 (2025-12-30) - Fix exchange column name
 - Changed 'exchange_code' to 'code' to match actual DB schema
 - Fixed all SQL queries referencing the exchanges table
@@ -319,7 +323,7 @@ class DatabaseClient:
                 SELECT p.*, s.symbol, s.name as security_name
                 FROM positions p
                 JOIN securities s ON p.security_id = s.security_id
-                WHERE p.broker_code = 'IBKR'
+                WHERE p.broker_code = 'MOOMOO'
                     AND p.status = 'open'
                 ORDER BY p.created_at DESC
                 """,
@@ -345,7 +349,7 @@ class DatabaseClient:
                 """
                 INSERT INTO securities (symbol, exchange_id)
                 SELECT %s, exchange_id FROM exchanges WHERE code = 'HKEX'
-                ON CONFLICT (symbol) DO UPDATE SET symbol = EXCLUDED.symbol
+                ON CONFLICT (symbol, exchange_id) DO UPDATE SET symbol = EXCLUDED.symbol
                 RETURNING security_id
                 """,
                 (symbol,),
@@ -359,7 +363,7 @@ class DatabaseClient:
                     security_id, side, quantity, entry_price, stop_loss, take_profit,
                     broker_order_id, broker_code, currency, status, notes
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, 'IBKR', 'HKD', 'open', %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'MOOMOO', 'HKD', 'open', %s)
                 RETURNING position_id
                 """,
                 (
@@ -377,6 +381,67 @@ class DatabaseClient:
 
         logger.info(f"Recorded position {position_id}: {side} {quantity} {symbol}")
         return position_id
+
+    def record_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        quantity: int,
+        limit_price: float | None,
+        filled_quantity: int,
+        filled_price: float | None,
+        status: str,
+        broker_order_id: str,
+    ) -> int:
+        """Record an order to the database.
+
+        Args:
+            symbol: Stock symbol
+            side: 'buy' or 'sell'
+            order_type: 'MARKET' or 'LIMIT'
+            quantity: Order quantity
+            limit_price: Limit price (None for market orders)
+            filled_quantity: Quantity filled
+            filled_price: Average fill price
+            status: Order status ('filled', 'cancelled', 'pending')
+            broker_order_id: Broker's order ID
+
+        Returns:
+            Database order_id
+        """
+        with self.get_cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO orders (
+                    symbol, side, order_type, quantity, limit_price,
+                    filled_quantity, filled_price, status, broker_order_id,
+                    broker_code, submitted_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'MOOMOO', NOW())
+                ON CONFLICT (broker_order_id) DO UPDATE SET
+                    filled_quantity = EXCLUDED.filled_quantity,
+                    filled_price = EXCLUDED.filled_price,
+                    status = EXCLUDED.status,
+                    updated_at = NOW()
+                RETURNING order_id
+                """,
+                (
+                    symbol,
+                    side,
+                    order_type,
+                    quantity,
+                    limit_price,
+                    filled_quantity,
+                    filled_price,
+                    status,
+                    broker_order_id,
+                ),
+            )
+            order_id = cur.fetchone()["order_id"]
+
+        logger.info(f"Recorded order {order_id}: {side} {quantity} {symbol} ({status})")
+        return order_id
 
     def close_position(
         self,
@@ -441,7 +506,7 @@ class DatabaseClient:
                     COALESCE(SUM(realized_pnl), 0) as realized_pnl
                 FROM positions p
                 JOIN securities s ON p.security_id = s.security_id
-                WHERE p.broker_code = 'IBKR'
+                WHERE p.broker_code = 'MOOMOO'
                     AND p.status = 'closed'
                     AND DATE(p.exit_time AT TIME ZONE 'Asia/Hong_Kong') = %s
                 """,
@@ -454,7 +519,7 @@ class DatabaseClient:
                 """
                 SELECT COUNT(*) as open_positions
                 FROM positions
-                WHERE broker_code = 'IBKR' AND status = 'open'
+                WHERE broker_code = 'MOOMOO' AND status = 'open'
                 """,
             )
             open_count = cur.fetchone()["open_positions"]
