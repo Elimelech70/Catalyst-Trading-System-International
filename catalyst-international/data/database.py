@@ -2,7 +2,7 @@
 PostgreSQL database client for the Catalyst Trading Agent.
 
 Name of file: database.py
-Version: 1.2.0
+Version: 1.3.0
 Last Updated: 2026-01-06
 
 This module handles all database operations including:
@@ -12,6 +12,11 @@ This module handles all database operations including:
 - Trade history
 
 REVISION HISTORY:
+v1.3.0 (2026-01-06) - Complete position recording
+- Added symbol column to position INSERT
+- Added entry_time to position INSERT
+- Ensures all position fields are populated
+
 v1.2.0 (2026-01-06) - Fix position recording bugs
 - Fixed ON CONFLICT clause to match (symbol, exchange_id) constraint
 - Changed broker_code from 'IBKR' to 'MOOMOO'
@@ -360,14 +365,15 @@ class DatabaseClient:
             cur.execute(
                 """
                 INSERT INTO positions (
-                    security_id, side, quantity, entry_price, stop_loss, take_profit,
-                    broker_order_id, broker_code, currency, status, notes
+                    security_id, symbol, side, quantity, entry_price, stop_loss, take_profit,
+                    broker_order_id, broker_code, currency, status, notes, entry_time
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, 'MOOMOO', 'HKD', 'open', %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'MOOMOO', 'HKD', 'open', %s, NOW())
                 RETURNING position_id
                 """,
                 (
                     security_id,
+                    symbol,
                     side,
                     quantity,
                     entry_price,
