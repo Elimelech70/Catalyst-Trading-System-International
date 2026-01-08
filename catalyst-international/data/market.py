@@ -2,8 +2,8 @@
 Market data and technical analysis for the Catalyst Trading Agent.
 
 Name of file: market.py
-Version: 2.1.0
-Last Updated: 2025-12-30
+Version: 2.2.0
+Last Updated: 2026-01-08
 
 This module provides:
 - Real-time quotes from Moomoo/Futu
@@ -12,6 +12,11 @@ This module provides:
 - Market scanning functionality
 
 REVISION HISTORY:
+v2.2.0 (2026-01-08) - Dynamic lot size support
+- get_quote() now returns actual board lot size instead of hardcoded 100
+- Added _get_lot_size() helper method
+- Fixes odd lot order errors for stocks with non-100 lot sizes
+
 v2.1.0 (2025-12-30) - Batch quote support to avoid rate limiting
 - Updated scan_market() to use get_quotes_batch() instead of individual calls
 - Fixes "too frequent" error (60 requests per 30 seconds limit)
@@ -177,9 +182,18 @@ class MarketData:
             "open": safe_float(data.get("open_price") or data.get("open")),
             "prev_close": prev_close,
             "market_cap": safe_float(data.get("market_cap")),
-            "lot_size": 100,  # HKEX board lot
+            "lot_size": self._get_lot_size(symbol),  # Actual HKEX board lot for this stock
             "timestamp": datetime.now().isoformat(),
         }
+
+    def _get_lot_size(self, symbol: str) -> int:
+        """Get actual lot size from broker if available."""
+        if hasattr(self.broker, 'get_lot_size'):
+            try:
+                return self.broker.get_lot_size(symbol)
+            except Exception as e:
+                logger.warning(f"Could not get lot size for {symbol}: {e}")
+        return 100  # Default fallback
 
     def get_historical(
         self, symbol: str, timeframe: str = "15m", bars: int = 100

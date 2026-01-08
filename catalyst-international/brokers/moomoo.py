@@ -1,11 +1,17 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: moomoo.py
-Version: 1.2.0
-Last Updated: 2026-01-02
+Version: 1.3.0
+Last Updated: 2026-01-08
 Purpose: Moomoo client for HKEX trading via OpenD gateway
 
 REVISION HISTORY:
+v1.3.0 (2026-01-08) - Dynamic lot size support
+- Added get_lot_size() method to fetch actual board lot from API
+- Updated execute_trade() to use stock-specific lot size
+- Fixes "odd lot" order rejection errors
+- Different HKEX stocks have different lot sizes (100, 500, 1000, etc.)
+
 v1.2.0 (2026-01-02) - Add historical data support
 - Added get_historical_data() for OHLCV candlestick data
 - Uses request_history_kline API with KLType mapping
@@ -59,6 +65,8 @@ from moomoo import (
     ModifyOrderOp,
     TrdEnv,
     KLType,
+    Market,
+    SecurityType,
 )
 
 logger = logging.getLogger(__name__)
@@ -298,6 +306,47 @@ class MoomooClient:
             "update_time": str(row.get("update_time", "")),
         }
 
+    def get_lot_size(self, symbol: str) -> int:
+        """Get the board lot size for a stock.
+
+        HKEX stocks have varying lot sizes:
+        - Tencent (0700): 100
+        - CK Hutchison (0001): 500
+        - China Life (2628): 500
+        - Great Wall Motor (2333): 500
+        - Natural Dairy (0462): 4000
+
+        Args:
+            symbol: Stock code (e.g., '700' or '2628')
+
+        Returns:
+            Board lot size (e.g., 100 for Tencent, 500 for China Life)
+        """
+        if not self._connected:
+            raise RuntimeError("Not connected to OpenD")
+
+        # Format symbol for Moomoo
+        moomoo_symbol = self._format_hk_symbol(symbol)
+
+        # Use get_stock_basicinfo to fetch lot size
+        ret, data = self.quote_ctx.get_stock_basicinfo(
+            Market.HK,
+            SecurityType.STOCK,
+            [moomoo_symbol]
+        )
+
+        if ret != RET_OK:
+            logger.warning(f"Failed to get lot size for {symbol}: {data}")
+            return 100  # Default fallback
+
+        if data is not None and len(data) > 0:
+            lot_size = int(data['lot_size'].iloc[0])
+            logger.debug(f"Lot size for {symbol}: {lot_size}")
+            return lot_size
+
+        logger.warning(f"No lot size data for {symbol}, using default 100")
+        return 100
+
     def get_quotes_batch(self, symbols: List[str]) -> dict:
         """Get real-time quotes for multiple symbols in one API call.
 
@@ -489,12 +538,13 @@ class MoomooClient:
         if self.trd_env != TrdEnv.SIMULATE and not self._trade_unlocked:
             raise RuntimeError("Trading not unlocked (required for REAL trading)")
 
-        # Validate lot size (HKEX requires multiples of 100)
-        if quantity % 100 != 0:
-            logger.warning(f"Adjusting quantity {quantity} to nearest lot of 100")
-            quantity = (quantity // 100) * 100
+        # Validate lot size (HKEX requires multiples of board lot - varies by stock)
+        actual_lot_size = self.get_lot_size(symbol)
+        if quantity % actual_lot_size != 0:
+            logger.warning(f"Adjusting quantity {quantity} to nearest lot of {actual_lot_size}")
+            quantity = (quantity // actual_lot_size) * actual_lot_size
             if quantity == 0:
-                quantity = 100
+                quantity = actual_lot_size
 
         moomoo_symbol = self._format_hk_symbol(symbol)
 

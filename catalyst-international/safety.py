@@ -1,9 +1,21 @@
 """
 Safety layer for the Catalyst Trading Agent.
 
+Name of file: safety.py
+Version: 1.1.0
+Last Updated: 2026-01-08
+
 This module validates all trading actions before execution to ensure
 they comply with risk management rules. It acts as the last line of
 defense before any order is submitted.
+
+REVISION HISTORY:
+v1.1.0 (2026-01-08) - Dynamic lot size support
+- validate_trade() now accepts stock-specific lot_size parameter
+- Fixes validation errors for stocks with non-100 lot sizes
+- HKEX stocks have varying lot sizes (100, 500, 1000, etc.)
+
+v1.0.0 (2025-12-06) - Initial implementation
 """
 
 import logging
@@ -106,6 +118,7 @@ class SafetyValidator:
         cash_available: float,
         current_positions: int,
         daily_pnl_pct: float,
+        lot_size: int = 100,  # Stock-specific lot size
     ) -> SafetyCheckResult:
         """Validate a proposed trade against all risk limits.
 
@@ -120,6 +133,8 @@ class SafetyValidator:
             cash_available: Available cash
             current_positions: Number of current positions
             daily_pnl_pct: Today's P&L as percentage (e.g., -0.01 for -1%)
+            lot_size: Board lot size for this stock (default 100).
+                HKEX stocks have varying lot sizes (100, 500, 1000, etc.)
 
         Returns:
             SafetyCheckResult with approval status and details
@@ -165,11 +180,12 @@ class SafetyValidator:
                 details=details,
             )
 
-        # Check 2: Lot size (HKEX requires multiples of 100)
-        if quantity % self.limits.lot_size != 0:
+        # Check 2: Lot size (HKEX requires multiples of board lot - varies by stock)
+        actual_lot_size = lot_size if lot_size else self.limits.lot_size
+        if quantity % actual_lot_size != 0:
             return SafetyCheckResult(
                 approved=False,
-                reason=f"Quantity must be multiple of {self.limits.lot_size} (board lot)",
+                reason=f"Quantity must be multiple of {actual_lot_size} (board lot for {symbol})",
                 warnings=warnings,
                 details=details,
             )
