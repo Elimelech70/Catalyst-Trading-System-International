@@ -1,0 +1,124 @@
+# ============================================================================
+# Name of Application: Catalyst Trading System
+# Name of file: catalyst-consciousness-hub.cron
+# Version: 1.0.0
+# Last Updated: 2026-01-10
+# Purpose: Cron schedule for consciousness hub droplet (big_bro + dev_claude)
+# ============================================================================
+#
+# DESCRIPTION:
+# This cron file runs on the US droplet (consciousness hub).
+# Manages big_bro strategic oversight and dev_claude sandbox trading.
+#
+# INSTALLATION:
+# sudo cp catalyst-consciousness-hub.cron /etc/cron.d/catalyst-hub
+# sudo chmod 644 /etc/cron.d/catalyst-hub
+# sudo systemctl restart cron
+#
+# TIMEZONE: All times in UTC (HKEX market hours converted)
+# HKT = UTC + 8
+# 09:00 HKT = 01:00 UTC
+# 16:00 HKT = 08:00 UTC
+#
+# ============================================================================
+
+# Environment
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+CATALYST_DIR=/root/catalyst
+DEV_DIR=/root/catalyst/dev
+VENV_PYTHON=/root/catalyst/venv/bin/python3
+LOG_DIR=/root/catalyst/logs
+
+# ============================================================================
+# BIG_BRO - STRATEGIC OVERSIGHT
+# ============================================================================
+# Runs twice daily to review system health and validate learnings
+
+# Morning review (06:00 UTC = 14:00 HKT)
+0 6 * * * cd $CATALYST_DIR && $VENV_PYTHON scripts/run_big_bro.py review >> $LOG_DIR/big_bro.log 2>&1
+
+# Evening review (18:00 UTC = 02:00 HKT next day)  
+0 18 * * * cd $CATALYST_DIR && $VENV_PYTHON scripts/run_big_bro.py review >> $LOG_DIR/big_bro.log 2>&1
+
+# ============================================================================
+# DEV_CLAUDE - PRE-MARKET STARTUP
+# ============================================================================
+# 09:00 HKT = 01:00 UTC
+# Reconciles monitors, ensures all positions have active monitors
+
+0 1 * * 1-5 cd $DEV_DIR && $VENV_PYTHON startup_monitor.py >> $LOG_DIR/dev_startup.log 2>&1
+
+# ============================================================================
+# DEV_CLAUDE - MORNING SESSION TRADING
+# ============================================================================
+# HKEX Morning: 09:30 - 12:00 HKT = 01:30 - 04:00 UTC
+#
+# Full trading workflow:
+#   1. Check portfolio
+#   2. Scan market for opportunities
+#   3. Analyze candidates
+#   4. Execute trades if criteria met
+#   5. Position monitor starts automatically for new positions
+
+# 09:30 HKT (01:30 UTC) - First trading cycle
+30 1 * * 1-5 cd $DEV_DIR && $VENV_PYTHON unified_agent.py --mode trade >> $LOG_DIR/dev_trade.log 2>&1
+
+# 10:00 HKT (02:00 UTC)
+0 2 * * 1-5 cd $DEV_DIR && $VENV_PYTHON unified_agent.py --mode trade >> $LOG_DIR/dev_trade.log 2>&1
+
+# 11:00 HKT (03:00 UTC)
+0 3 * * 1-5 cd $DEV_DIR && $VENV_PYTHON unified_agent.py --mode trade >> $LOG_DIR/dev_trade.log 2>&1
+
+# ============================================================================
+# DEV_CLAUDE - LUNCH BREAK
+# ============================================================================
+# 12:00 HKT = 04:00 UTC
+# HKEX closes 12:00-13:00 for lunch
+# Review positions, optionally close if patterns weak
+
+0 4 * * 1-5 cd $DEV_DIR && $VENV_PYTHON unified_agent.py --mode close >> $LOG_DIR/dev_trade.log 2>&1
+
+# ============================================================================
+# DEV_CLAUDE - AFTERNOON SESSION TRADING
+# ============================================================================
+# HKEX Afternoon: 13:00 - 16:00 HKT = 05:00 - 08:00 UTC
+
+# 13:00 HKT (05:00 UTC) - Afternoon open
+0 5 * * 1-5 cd $DEV_DIR && $VENV_PYTHON unified_agent.py --mode trade >> $LOG_DIR/dev_trade.log 2>&1
+
+# 14:00 HKT (06:00 UTC)
+0 6 * * 1-5 cd $DEV_DIR && $VENV_PYTHON unified_agent.py --mode trade >> $LOG_DIR/dev_trade.log 2>&1
+
+# 15:00 HKT (07:00 UTC)
+0 7 * * 1-5 cd $DEV_DIR && $VENV_PYTHON unified_agent.py --mode trade >> $LOG_DIR/dev_trade.log 2>&1
+
+# ============================================================================
+# DEV_CLAUDE - END OF DAY
+# ============================================================================
+# 16:00 HKT = 08:00 UTC
+# Close all positions, generate daily report
+
+0 8 * * 1-5 cd $DEV_DIR && $VENV_PYTHON unified_agent.py --mode close >> $LOG_DIR/dev_trade.log 2>&1
+
+# ============================================================================
+# DEV_CLAUDE - OFF-HOURS HEARTBEAT
+# ============================================================================
+# Process messages, update status, no trading
+# Runs every 3 hours outside market hours
+
+0 9,12,15,18,21,0 * * 1-5 cd $DEV_DIR && $VENV_PYTHON unified_agent.py --mode heartbeat >> $LOG_DIR/dev_heartbeat.log 2>&1
+
+# Weekend heartbeats (every 6 hours)
+0 0,6,12,18 * * 0,6 cd $DEV_DIR && $VENV_PYTHON unified_agent.py --mode heartbeat >> $LOG_DIR/dev_heartbeat.log 2>&1
+
+# ============================================================================
+# LOG ROTATION
+# ============================================================================
+# Clean up old logs weekly
+
+0 0 * * 0 find $LOG_DIR -name "*.log" -mtime +30 -delete
+
+# ============================================================================
+# END OF CRON FILE
+# ============================================================================
