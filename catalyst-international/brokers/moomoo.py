@@ -1,11 +1,16 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: moomoo.py
-Version: 1.3.0
+Version: 1.4.0
 Last Updated: 2026-01-08
 Purpose: Moomoo client for HKEX trading via OpenD gateway
 
 REVISION HISTORY:
+v1.4.0 (2026-01-08) - Symbol normalization fix
+- Fixed close_position() to normalize symbol before matching
+- Now accepts '700', '0700', or 'HK.00700' formats
+- Positions store symbols without leading zeros (e.g., '700' not '0700')
+
 v1.3.0 (2026-01-08) - Dynamic lot size support
 - Added get_lot_size() method to fetch actual board lot from API
 - Updated execute_trade() to use stock-specific lot size
@@ -613,16 +618,20 @@ class MoomooClient:
 
     def close_position(self, symbol: str, reason: str = "") -> OrderResult:
         """Close a specific position.
-        
+
         Args:
-            symbol: Stock code to close
+            symbol: Stock code to close (accepts '700', '0700', 'HK.00700')
             reason: Reason for closing
-            
+
         Returns:
             OrderResult with order details
         """
         positions = self.get_positions()
-        position = next((p for p in positions if p.symbol == symbol), None)
+        # Normalize input symbol to match position format (strip leading zeros)
+        normalized_symbol = symbol.lstrip('0') or '0'
+        if symbol.startswith('HK.'):
+            normalized_symbol = self._parse_hk_symbol(symbol)
+        position = next((p for p in positions if p.symbol == normalized_symbol), None)
 
         if not position:
             return OrderResult(
