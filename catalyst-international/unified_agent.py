@@ -154,22 +154,23 @@ class ConsciousnessClient:
     async def wake_up(self) -> Dict[str, Any]:
         """Mark agent as awake and get pending messages."""
         async with self.pool.acquire() as conn:
-            # Update status
+            # Update status (using research DB schema)
             await conn.execute("""
                 UPDATE claude_state SET
-                    status = 'awake',
-                    last_active = NOW()
+                    current_mode = 'awake',
+                    last_wake_at = NOW(),
+                    updated_at = NOW()
                 WHERE agent_id = $1
             """, self.agent_id)
             
-            # Get pending messages
+            # Get pending messages (using research DB schema)
             messages = await conn.fetch("""
-                SELECT message_id, from_agent, subject, body, priority
+                SELECT id, from_agent, subject, body, priority
                 FROM claude_messages
                 WHERE to_agent = $1 AND status = 'pending'
                 ORDER BY priority DESC, created_at
             """, self.agent_id)
-            
+
             # Mark as read
             if messages:
                 await conn.execute("""
@@ -187,8 +188,9 @@ class ConsciousnessClient:
     async def observe(self, category: str, content: str, metadata: Dict = None):
         """Record an observation."""
         async with self.pool.acquire() as conn:
+            # Using research DB schema - observation_type instead of category, tags instead of metadata
             await conn.execute("""
-                INSERT INTO claude_observations (agent_id, category, content, metadata)
+                INSERT INTO claude_observations (agent_id, observation_type, content, tags)
                 VALUES ($1, $2, $3, $4)
             """, self.agent_id, category, content, metadata or {})
     
@@ -197,8 +199,8 @@ class ConsciousnessClient:
         async with self.pool.acquire() as conn:
             await conn.execute("""
                 UPDATE claude_state SET
-                    status = 'sleeping',
-                    last_active = NOW()
+                    current_mode = 'sleeping',
+                    updated_at = NOW()
                 WHERE agent_id = $1
             """, self.agent_id)
 
