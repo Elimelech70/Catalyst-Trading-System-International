@@ -1,22 +1,27 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: startup_monitor.py
-Version: 1.0.0
+Version: 1.1.0
 Last Updated: 2026-01-10
 Purpose: Pre-market position reconciliation and monitor startup
 
 REVISION HISTORY:
+v1.1.0 (2026-01-10) - Added broker position sync
+- Syncs positions from Moomoo to database
+- Adds missing positions, closes stale ones
+
 v1.0.0 (2026-01-10) - Initial implementation
 
 Description:
 Called at pre-market to ensure every open position has an active monitor.
-Reconciles positions vs monitors, starts missing monitors, stops orphaned ones.
+1. Syncs broker positions to database (adds new, closes stale)
+2. Reconciles positions vs monitors, starts missing monitors, stops orphaned ones.
 Records reconciliation results to position_monitor_status table.
 
 Usage:
     # Run via cron at pre-market (09:00 HKT)
     python startup_monitor.py
-    
+
     # Or import and call directly
     from startup_monitor import run_startup_reconciliation
     result = await run_startup_reconciliation()
@@ -31,6 +36,12 @@ from typing import List, Dict, Any, Optional
 from zoneinfo import ZoneInfo
 
 import asyncpg
+
+# Local imports
+try:
+    from brokers.moomoo import MoomooClient
+except ImportError:
+    MoomooClient = None
 
 # Configure logging
 logging.basicConfig(
@@ -66,13 +77,13 @@ async def get_db_pool() -> asyncpg.Pool:
 async def get_open_positions(pool: asyncpg.Pool) -> List[Dict[str, Any]]:
     """
     Get all open positions from database.
-    
+
     Returns:
         List of position dicts
     """
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT 
+            SELECT
                 p.position_id,
                 p.symbol,
                 p.side,
@@ -81,15 +92,152 @@ async def get_open_positions(pool: asyncpg.Pool) -> List[Dict[str, Any]]:
                 p.stop_loss,
                 p.take_profit,
                 p.entry_time,
-                p.entry_volume,
-                p.entry_reason,
-                p.unrealized_pnl,
-                p.high_watermark
+                p.notes as entry_reason,
+                p.max_favorable as high_watermark
             FROM positions p
             WHERE p.status = 'open'
             ORDER BY p.entry_time
         """)
         return [dict(r) for r in rows]
+
+
+# =============================================================================
+# BROKER SYNC FUNCTIONS
+# =============================================================================
+
+def get_broker_positions() -> List[Dict[str, Any]]:
+    """Get current positions from Moomoo broker."""
+    if not MoomooClient:
+        logger.warning("MoomooClient not available")
+        return []
+
+    try:
+        client = MoomooClient(paper_trading=True)
+        client.connect()
+        positions = client.get_positions()
+        client.disconnect()
+
+        return [
+            {
+                'symbol': p.symbol,
+                'quantity': p.quantity,
+                'avg_cost': p.avg_cost,
+                'current_price': p.current_price,
+                'unrealized_pnl': p.unrealized_pnl,
+            }
+            for p in positions
+        ]
+    except Exception as e:
+        logger.error(f"Error getting broker positions: {e}")
+        return []
+
+
+async def sync_broker_positions(pool: asyncpg.Pool) -> Dict[str, Any]:
+    """
+    Sync positions from broker to database.
+
+    Process:
+    1. Get positions from Moomoo
+    2. Get open positions from DB
+    3. Add positions that exist in broker but not in DB
+    4. Close positions that exist in DB but not in broker
+
+    Returns:
+        Sync results dict
+    """
+    logger.info("=" * 60)
+    logger.info("SYNCING BROKER POSITIONS")
+    logger.info("=" * 60)
+
+    result = {
+        'timestamp': datetime.now(HK_TZ).isoformat(),
+        'broker_positions': 0,
+        'db_positions': 0,
+        'positions_added': 0,
+        'positions_closed': 0,
+        'errors': []
+    }
+
+    try:
+        # Get broker positions
+        broker_positions = get_broker_positions()
+        result['broker_positions'] = len(broker_positions)
+        broker_symbols = {p['symbol'] for p in broker_positions}
+        broker_by_symbol = {p['symbol']: p for p in broker_positions}
+
+        logger.info(f"Broker positions: {len(broker_positions)}")
+        for p in broker_positions:
+            logger.info(f"  {p['symbol']}: {p['quantity']} @ {p['avg_cost']:.2f}")
+
+        # Get DB positions
+        db_positions = await get_open_positions(pool)
+        result['db_positions'] = len(db_positions)
+        db_symbols = {p['symbol'] for p in db_positions}
+
+        logger.info(f"DB positions: {len(db_positions)}")
+        for p in db_positions:
+            logger.info(f"  {p['symbol']}: {p['quantity']} @ {p['entry_price']}")
+
+        # Find discrepancies
+        in_broker_not_db = broker_symbols - db_symbols
+        in_db_not_broker = db_symbols - broker_symbols
+
+        # Add missing positions (in broker but not DB)
+        async with pool.acquire() as conn:
+            for symbol in in_broker_not_db:
+                bp = broker_by_symbol[symbol]
+                try:
+                    await conn.execute("""
+                        INSERT INTO positions (
+                            symbol, side, quantity, entry_price, status,
+                            entry_time, notes, created_at, updated_at
+                        ) VALUES (
+                            $1, 'long', $2, $3, 'open',
+                            NOW(), 'Synced from broker', NOW(), NOW()
+                        )
+                    """, symbol, bp['quantity'], bp['avg_cost'])
+                    logger.info(f"Added position: {symbol} x {bp['quantity']} @ {bp['avg_cost']:.2f}")
+                    result['positions_added'] += 1
+                except Exception as e:
+                    error_msg = f"Failed to add {symbol}: {e}"
+                    logger.error(error_msg)
+                    result['errors'].append(error_msg)
+
+            # Close stale positions (in DB but not broker)
+            for symbol in in_db_not_broker:
+                try:
+                    await conn.execute("""
+                        UPDATE positions SET
+                            status = 'closed',
+                            exit_reason = 'Closed by broker sync - not found in broker',
+                            exit_time = NOW(),
+                            closed_at = NOW(),
+                            updated_at = NOW()
+                        WHERE symbol = $1 AND status = 'open'
+                    """, symbol)
+                    logger.info(f"Closed stale position: {symbol}")
+                    result['positions_closed'] += 1
+                except Exception as e:
+                    error_msg = f"Failed to close {symbol}: {e}"
+                    logger.error(error_msg)
+                    result['errors'].append(error_msg)
+
+        logger.info("-" * 60)
+        logger.info("BROKER SYNC COMPLETE")
+        logger.info(f"  Broker positions: {result['broker_positions']}")
+        logger.info(f"  DB positions: {result['db_positions']}")
+        logger.info(f"  Positions added: {result['positions_added']}")
+        logger.info(f"  Positions closed: {result['positions_closed']}")
+        if result['errors']:
+            logger.error(f"  Errors: {len(result['errors'])}")
+        logger.info("=" * 60)
+
+    except Exception as e:
+        error_msg = f"Broker sync failed: {e}"
+        logger.error(error_msg)
+        result['errors'].append(error_msg)
+
+    return result
 
 
 async def get_active_monitors(pool: asyncpg.Pool) -> List[Dict[str, Any]]:
@@ -153,8 +301,8 @@ async def create_monitor_record(
                 $1, $2, 'starting', NOW(), $3,
                 jsonb_build_object(
                     'created_by', 'startup_monitor',
-                    'stop_loss', $4,
-                    'take_profit', $5
+                    'stop_loss', $4::numeric,
+                    'take_profit', $5::numeric
                 )
             )
             RETURNING monitor_id
@@ -457,8 +605,8 @@ def print_health_report(health: Dict[str, Any]) -> None:
         for p in health['positions']:
             last_check = f"{p.get('minutes_since_check', 0):.0f} min" if p.get('minutes_since_check') else "-"
             rsi = f"{p['last_rsi']:.1f}" if p.get('last_rsi') else "-"
-            rec = p.get('recommendation', '-')
-            print(f"{p['symbol']:<8} {p['health']:<15} {last_check:<12} {rsi:<6} {rec:<10}")
+            rec = p.get('recommendation') or '-'
+            print(f"{p['symbol']:<8} {p['health'] or '-':<15} {last_check:<12} {rsi:<6} {rec:<10}")
     
     print("=" * 60)
 
@@ -470,27 +618,36 @@ def print_health_report(health: Dict[str, Any]) -> None:
 async def run_startup_reconciliation() -> Dict[str, Any]:
     """
     Main entry point for startup reconciliation.
-    
+
+    Process:
+    1. Sync positions from broker to database
+    2. Reconcile monitors for all open positions
+    3. Generate health report
+
     Returns:
-        Dict with reconciliation and health results
+        Dict with sync, reconciliation, and health results
     """
     pool = await get_db_pool()
-    
+
     try:
-        # Reconcile monitors
+        # Step 1: Sync broker positions to DB
+        sync_result = await sync_broker_positions(pool)
+
+        # Step 2: Reconcile monitors
         recon_result = await reconcile_monitors(pool)
-        
-        # Get health report
+
+        # Step 3: Get health report
         health = await get_monitor_health_report(pool)
-        
+
         # Print health report
         print_health_report(health)
-        
+
         return {
+            'broker_sync': sync_result,
             'reconciliation': recon_result,
             'health': health
         }
-        
+
     finally:
         await pool.close()
 
