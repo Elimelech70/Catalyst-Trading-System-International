@@ -1,932 +1,698 @@
-#!/usr/bin/env python3
 """
 Name of Application: Catalyst Trading System
 Name of file: unified_agent.py
-Version: 1.0.0
-Last Updated: 2026-01-05
-Purpose: Unified agent combining consciousness + trading
+Version: 2.0.0
+Last Updated: 2026-01-10
+Purpose: Unified trading agent with consciousness and position monitoring
 
 REVISION HISTORY:
-v1.0.0 (2026-01-05) - Initial implementation
-- Merged heartbeat_intl.py and agent.py
-- Single entry point with mode auto-detection
-- Market hours awareness
-- Consciousness integration throughout
+v2.0.0 (2026-01-10) - Ecosystem restructure
+- Startup monitor integration
+- Position monitor integration (auto-start on BUY)
+- Config file support (YAML)
+- Consciousness integration
+- Pattern-based signal detection
+
+v1.0.0 (2026-01-05) - Initial unified agent
 
 Description:
-This is the unified agent for intl_claude that handles:
-1. Consciousness (wake/sleep, messages, observations, learnings)
-2. Trading (market scanning, analysis, execution via Moomoo)
-3. Task execution (whitelisted system commands)
+Single-agent architecture for HKEX trading. Handles:
+- Market scanning and opportunity detection
+- Entry decision making with AI
+- Position monitoring with pattern-based exits
+- Consciousness integration for memory and learning
 
-The agent runs via cron and auto-detects its mode based on market hours.
-During trading hours, it performs full autonomous trading.
-Outside trading hours, it processes messages and tasks only.
+Usage:
+    python unified_agent.py --mode trade
+    python unified_agent.py --mode close
+    python unified_agent.py --mode heartbeat
+    python unified_agent.py --mode scan
 """
 
 import argparse
 import asyncio
-import asyncpg
-import json
 import logging
 import os
 import sys
-import uuid
 from datetime import datetime, time
-from decimal import Decimal
-from typing import Any, Optional
+from pathlib import Path
+from typing import Dict, Any, Optional, List
 from zoneinfo import ZoneInfo
 
-import anthropic
 import yaml
-from dotenv import load_dotenv
+import asyncpg
+import anthropic
 
-# Load environment
-load_dotenv()
+# Local imports - adjust path as needed
+try:
+    from brokers.moomoo import MoomooClient
+    from data.market import MarketData
+    from safety import SafetyValidator
+except ImportError:
+    # Running standalone - mock imports
+    MoomooClient = None
+    MarketData = None
+    SafetyValidator = None
 
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
+from signals import analyze_position, SignalThresholds, DEFAULT_THRESHOLDS
+from startup_monitor import run_startup_reconciliation, get_monitor_health_report
+from position_monitor import start_position_monitor
 
-AGENT_ID = "intl_claude"
-MARKET = "HKEX"
-HK_TZ = ZoneInfo("Asia/Hong_Kong")
-
-# Database URLs
-TRADING_DATABASE_URL = os.environ.get("DATABASE_URL")  # catalyst_intl
-RESEARCH_DATABASE_URL = os.environ.get("RESEARCH_DATABASE_URL")  # catalyst_research
-
-# Claude API
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-MODEL_TRADING = "claude-sonnet-4-20250514"  # For trading decisions
-MODEL_MESSAGES = "claude-3-5-haiku-20241022"  # For message processing
-MAX_TOKENS = 4096
-MAX_ITERATIONS = 20
-
-# Budgets
-DAILY_BUDGET = Decimal("5.00")
-TRADING_BUDGET_RATIO = Decimal("0.80")  # 80% for trading, 20% for consciousness
-
-# Project paths
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_DIR = os.path.join(PROJECT_DIR, "logs")
-os.makedirs(LOG_DIR, exist_ok=True)
-
-# Logging
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(os.path.join(LOG_DIR, "unified_agent.log")),
-    ],
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-
-# ============================================================================
-# MARKET HOURS
-# ============================================================================
-
-class MarketHours:
-    """HKEX market hours handler."""
-    
-    # Time boundaries (HKT)
-    PRE_MARKET_START = time(8, 0)
-    MORNING_OPEN = time(9, 30)
-    LUNCH_START = time(12, 0)
-    AFTERNOON_OPEN = time(13, 0)
-    MARKET_CLOSE = time(16, 0)
-    AFTER_HOURS_END = time(16, 30)
-    
-    @classmethod
-    def get_current_mode(cls) -> str:
-        """Determine agent mode based on current HK time."""
-        now = datetime.now(HK_TZ).time()
-        weekday = datetime.now(HK_TZ).weekday()
-        
-        # Weekend = heartbeat only
-        if weekday >= 5:
-            return "heartbeat"
-        
-        # Pre-market
-        if cls.PRE_MARKET_START <= now < cls.MORNING_OPEN:
-            return "scan"
-        
-        # Morning session
-        if cls.MORNING_OPEN <= now < cls.LUNCH_START:
-            return "trade"
-        
-        # Lunch break - close positions
-        if cls.LUNCH_START <= now < cls.AFTERNOON_OPEN:
-            return "close"
-        
-        # Afternoon session
-        if cls.AFTERNOON_OPEN <= now < cls.MARKET_CLOSE:
-            return "trade"
-        
-        # After hours - EOD report
-        if cls.MARKET_CLOSE <= now < cls.AFTER_HOURS_END:
-            return "close"
-        
-        # Outside market hours
-        return "heartbeat"
-    
-    @classmethod
-    def is_trading_hours(cls) -> bool:
-        """Check if we're in active trading hours."""
-        mode = cls.get_current_mode()
-        return mode in ("trade", "scan", "close")
-    
-    @classmethod
-    def get_session_info(cls) -> dict:
-        """Get detailed session information."""
-        now = datetime.now(HK_TZ)
-        mode = cls.get_current_mode()
-        
-        return {
-            "current_time_hkt": now.strftime("%Y-%m-%d %H:%M:%S"),
-            "weekday": now.strftime("%A"),
-            "mode": mode,
-            "is_trading_hours": cls.is_trading_hours(),
-            "next_session": cls._get_next_session(now),
-        }
-    
-    @classmethod
-    def _get_next_session(cls, now: datetime) -> str:
-        """Get description of next trading session."""
-        current_time = now.time()
-        
-        if current_time < cls.PRE_MARKET_START:
-            return f"Pre-market at {cls.PRE_MARKET_START}"
-        elif current_time < cls.MORNING_OPEN:
-            return f"Morning open at {cls.MORNING_OPEN}"
-        elif current_time < cls.LUNCH_START:
-            return f"Lunch at {cls.LUNCH_START}"
-        elif current_time < cls.AFTERNOON_OPEN:
-            return f"Afternoon open at {cls.AFTERNOON_OPEN}"
-        elif current_time < cls.MARKET_CLOSE:
-            return f"Market close at {cls.MARKET_CLOSE}"
-        else:
-            return "Next trading day"
+# Timezone
+HK_TZ = ZoneInfo("Asia/Hong_Kong")
 
 
-# ============================================================================
-# SYSTEM PROMPT
-# ============================================================================
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
 
-TRADING_SYSTEM_PROMPT = """You are intl_claude, an autonomous AI trading agent for the Hong Kong Stock Exchange (HKEX).
-
-## Your Identity
-- Agent ID: intl_claude
-- Market: HKEX (Hong Kong Stock Exchange)
-- Mission: Enable accessible trading through AI-powered analysis and execution
-
-## Your Role
-You make trading decisions during HKEX market hours using the tools available to you.
-Every decision you make should be documented with clear reasoning for the audit trail.
-
-## Market Hours (Hong Kong Time)
-- Pre-market: 08:00 - 09:30 (scan only)
-- Morning session: 09:30 - 12:00 (full trading)
-- Lunch break: 12:00 - 13:00 (NO TRADING - close positions)
-- Afternoon session: 13:00 - 16:00 (full trading)
-- After hours: 16:00 - 16:30 (EOD close and report)
-
-## Trading Strategy
-You are a momentum day trader. Your edge is:
-1. Finding stocks with volume spikes (>1.5x average)
-2. Confirming with technical patterns and indicators
-3. Using news catalysts to time entries
-4. Strict risk management (2% stop loss, 6% take profit)
-
-## Risk Rules (MUST FOLLOW)
-- Maximum 5 positions at once
-- Maximum HKD 40,000 per position
-- Maximum HKD 16,000 daily loss limit
-- ALWAYS use stop losses
-- NEVER hold through lunch break (12:00-13:00)
-- Close all positions before 16:00
-
-## Tool Usage Rules
-1. ALWAYS call check_risk before execute_trade
-2. NEVER trade if check_risk returns approved: false
-3. ALWAYS log your reasoning with log_decision
-4. Record observations for learning
-
-## Current Context
-{context}
-
-## Your Task
-Based on the current mode and market conditions, take appropriate actions:
-- scan: Find opportunities, analyze candidates, prepare for trading
-- trade: Execute your strategy with proper risk management
-- close: Exit positions, generate summary
-- heartbeat: Process messages only
-
-When you've completed all actions for this cycle, provide a summary of:
-- Actions taken
-- Positions entered/exited
-- Key decisions made
-- Any concerns or observations
-"""
-
-
-# ============================================================================
-# CONSCIOUSNESS DATABASE HELPERS
-# ============================================================================
-
-class ConsciousnessDB:
-    """Handle consciousness database operations (catalyst_research)."""
+def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
+    """Load configuration from YAML file."""
     
-    def __init__(self, pool: asyncpg.Pool):
-        self.pool = pool
-        self.agent_id = AGENT_ID
+    # Default paths to check
+    default_paths = [
+        Path("config/agent_config.yaml"),
+        Path("config/dev_claude_config.yaml"),
+        Path("config/intl_claude_config.yaml"),
+        Path("agent_config.yaml"),
+    ]
     
-    async def get_state(self) -> dict:
-        """Get current agent state."""
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM claude_state WHERE agent_id = $1",
-                self.agent_id
-            )
-            return dict(row) if row else {}
+    if config_path:
+        default_paths.insert(0, Path(config_path))
     
-    async def update_state(self, mode: str, status: str):
-        """Update agent state."""
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                UPDATE claude_state 
-                SET current_mode = $2, 
-                    status_message = $3, 
-                    last_wake_at = NOW(), 
-                    updated_at = NOW()
-                WHERE agent_id = $1
-            """, self.agent_id, mode, status)
+    for path in default_paths:
+        if path.exists():
+            logger.info(f"Loading config from {path}")
+            with open(path) as f:
+                return yaml.safe_load(f)
     
-    async def record_spend(self, cost: Decimal):
-        """Record API spend."""
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                UPDATE claude_state 
-                SET api_spend_today = api_spend_today + $2,
-                    updated_at = NOW()
-                WHERE agent_id = $1
-            """, self.agent_id, float(cost))
-    
-    async def get_pending_messages(self) -> list:
-        """Get pending messages for this agent."""
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT id, from_agent, subject, body, msg_type, priority, created_at
-                FROM claude_messages 
-                WHERE to_agent = $1 AND status = 'pending'
-                ORDER BY 
-                    CASE priority 
-                        WHEN 'urgent' THEN 1 
-                        WHEN 'high' THEN 2 
-                        WHEN 'normal' THEN 3 
-                        WHEN 'low' THEN 4 
-                    END,
-                    created_at ASC
-                LIMIT 10
-            """, self.agent_id)
-            return [dict(r) for r in rows]
-    
-    async def mark_message_read(self, msg_id: int):
-        """Mark message as read."""
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                UPDATE claude_messages 
-                SET status = 'read', read_at = NOW()
-                WHERE id = $1
-            """, msg_id)
-    
-    async def mark_message_processed(self, msg_id: int):
-        """Mark message as processed."""
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                UPDATE claude_messages 
-                SET status = 'processed'
-                WHERE id = $1
-            """, msg_id)
-    
-    async def send_message(
-        self, 
-        to_agent: str, 
-        subject: str, 
-        body: str, 
-        msg_type: str = "message",
-        priority: str = "normal"
-    ):
-        """Send a message to another agent."""
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO claude_messages 
-                (from_agent, to_agent, msg_type, priority, subject, body, status)
-                VALUES ($1, $2, $3, $4, $5, $6, 'pending')
-            """, self.agent_id, to_agent, msg_type, priority, subject, body)
-    
-    async def add_observation(
-        self,
-        subject: str,
-        content: str,
-        obs_type: str = "market",
-        confidence: float = 0.8,
-        market: str = "HKEX"
-    ):
-        """Record an observation."""
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO claude_observations 
-                (agent_id, observation_type, subject, content, confidence, market)
-                VALUES ($1, $2, $3, $4, $5, $6)
-            """, self.agent_id, obs_type, subject, content, confidence, market)
-    
-    async def add_learning(
-        self,
-        learning: str,
-        category: str = "trading",
-        confidence: float = 0.7,
-        context: str = None
-    ):
-        """Record a learning."""
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO claude_learnings 
-                (agent_id, learning, category, confidence, context)
-                VALUES ($1, $2, $3, $4, $5)
-            """, self.agent_id, learning, category, confidence, context)
-    
-    async def get_recent_learnings(self, limit: int = 5) -> list:
-        """Get recent learnings for context."""
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT learning, category, confidence
-                FROM claude_learnings
-                WHERE agent_id = $1
-                ORDER BY created_at DESC
-                LIMIT $2
-            """, self.agent_id, limit)
-            return [dict(r) for r in rows]
-
-
-# ============================================================================
-# TASK EXECUTOR (inline from task_executor_intl.py)
-# ============================================================================
-
-def parse_task_message(body: str) -> Optional[dict]:
-    """Parse a task message to extract task name and params."""
-    import re
-    
-    # Look for TASK: line
-    task_match = re.search(r'TASK:\s*(\w+)', body, re.IGNORECASE)
-    if not task_match:
-        return None
-    
-    task_name = task_match.group(1)
-    
-    # Look for PARAMS: line (JSON)
-    params = {}
-    params_match = re.search(r'PARAMS:\s*(\{.*?\})', body, re.DOTALL)
-    if params_match:
-        try:
-            params = json.loads(params_match.group(1))
-        except json.JSONDecodeError:
-            pass
-    
-    # Look for REASON: line
-    reason = ""
-    reason_match = re.search(r'REASON:\s*(.+?)(?:\n|$)', body)
-    if reason_match:
-        reason = reason_match.group(1).strip()
-    
+    # Return defaults if no config found
+    logger.warning("No config file found, using defaults")
     return {
-        "task": task_name,
-        "params": params,
-        "reason": reason
+        'agent': {'id': os.getenv('AGENT_ID', 'unified_agent')},
+        'trading': {
+            'max_positions': 5,
+            'max_position_value_hkd': 40000,
+            'daily_loss_limit_hkd': 16000,
+        },
+        'ai': {
+            'daily_budget_usd': 5.00,
+        }
     }
 
 
-# Simple whitelist for common tasks
-TASK_WHITELIST = {
-    "check_agent": "ps aux | grep -E 'agent.py|python.*agent' | grep -v grep",
-    "check_opend": "ps aux | grep -E 'OpenD|opend' | grep -v grep",
-    "disk_space": "df -h /",
-    "memory_usage": "free -m",
-    "db_positions": 'psql "$DATABASE_URL" -c "SELECT symbol, quantity, entry_price FROM positions WHERE status=\'open\';"',
-}
+# =============================================================================
+# DATABASE
+# =============================================================================
 
-
-class TaskExecutor:
-    """Execute whitelisted tasks."""
+class Database:
+    """Database connection manager."""
     
-    def __init__(self, agent_id: str):
-        self.agent_id = agent_id
-    
-    def is_whitelisted(self, task_name: str) -> bool:
-        return task_name in TASK_WHITELIST
-    
-    async def execute(self, task_name: str, params: dict = None, reason: str = None) -> dict:
-        """Execute a whitelisted task."""
-        import subprocess
-        
-        if not self.is_whitelisted(task_name):
-            return {
-                "success": False,
-                "error": f"Task '{task_name}' not whitelisted",
-                "requires_escalation": True
-            }
-        
-        command = TASK_WHITELIST[task_name]
-        
-        try:
-            result = subprocess.run(
-                command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                env=os.environ.copy()
-            )
-            
-            return {
-                "success": result.returncode == 0,
-                "task": task_name,
-                "stdout": result.stdout[:2000] if result.stdout else "",
-                "stderr": result.stderr[:500] if result.stderr else "",
-                "return_code": result.returncode,
-                "executed_at": datetime.now().isoformat(),
-                "executed_by": self.agent_id,
-            }
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": "Command timed out"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-
-# ============================================================================
-# UNIFIED AGENT
-# ============================================================================
-
-class UnifiedAgent:
-    """Unified agent combining consciousness + trading."""
-    
-    def __init__(self, mode_override: str = None):
-        """Initialize the unified agent.
-        
-        Args:
-            mode_override: Force a specific mode (scan/trade/close/heartbeat)
-        """
-        self.mode_override = mode_override
-        self.cycle_id = str(uuid.uuid4())[:8]
-        
-        # Clients
-        self.claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        self.broker = None
-        self.tool_executor = None
-        self.task_executor = TaskExecutor(AGENT_ID)
-        
-        # Database pools
-        self.research_pool: Optional[asyncpg.Pool] = None
+    def __init__(self, trading_url: str, research_url: str):
+        self.trading_url = trading_url
+        self.research_url = research_url
         self.trading_pool: Optional[asyncpg.Pool] = None
-        
-        # Consciousness
-        self.consciousness: Optional[ConsciousnessDB] = None
-        
-        # Tracking
-        self.api_spend = Decimal("0")
-        self.messages_processed = 0
-        self.tasks_executed = 0
-        self.trades_executed = 0
-        self.errors = []
+        self.research_pool: Optional[asyncpg.Pool] = None
     
-    async def initialize(self):
-        """Initialize all connections."""
-        logger.info(f"[{self.cycle_id}] Initializing unified agent...")
-        
-        # Research database (consciousness)
-        if RESEARCH_DATABASE_URL:
-            self.research_pool = await asyncpg.create_pool(
-                RESEARCH_DATABASE_URL,
-                min_size=1,
-                max_size=3
-            )
-            self.consciousness = ConsciousnessDB(self.research_pool)
-            
-            # Check budget before proceeding
-            state = await self.consciousness.get_state()
-            current_spend = Decimal(str(state.get("api_spend_today", 0)))
-            
-            if current_spend >= DAILY_BUDGET:
-                raise RuntimeError(f"Daily budget exhausted: ${current_spend:.4f} >= ${DAILY_BUDGET}")
-            
-            logger.info(f"[{self.cycle_id}] Budget remaining: ${DAILY_BUDGET - current_spend:.4f}")
-        else:
-            logger.warning(f"[{self.cycle_id}] RESEARCH_DATABASE_URL not set, consciousness disabled")
-        
-        # Trading database
-        if TRADING_DATABASE_URL:
-            self.trading_pool = await asyncpg.create_pool(
-                TRADING_DATABASE_URL,
-                min_size=1,
-                max_size=3
-            )
-        
-        # Initialize broker for trading hours
-        mode = self._get_mode()
-        if mode in ("trade", "scan", "close"):
-            try:
-                # Import broker (may not be available in all environments)
-                from brokers.moomoo import init_moomoo_client
-                self.broker = init_moomoo_client(paper_trading=True)
-                logger.info(f"[{self.cycle_id}] Moomoo broker connected")
-                
-                # Initialize tool executor
-                from tools import TOOLS
-                from tool_executor import create_tool_executor
-                from alerts import get_alert_sender
-
-                self.tool_executor = create_tool_executor(
-                    cycle_id=self.cycle_id,
-                    alert_callback=get_alert_sender(),
-                    agent=self,  # Enable position monitoring
-                )
-                self.tools = TOOLS
-                
-            except ImportError as e:
-                logger.warning(f"[{self.cycle_id}] Trading modules not available: {e}")
-                self.broker = None
-            except Exception as e:
-                logger.error(f"[{self.cycle_id}] Broker connection failed: {e}")
-                self.errors.append(f"Broker: {e}")
+    async def connect(self):
+        """Create connection pools."""
+        self.trading_pool = await asyncpg.create_pool(
+            self.trading_url, min_size=2, max_size=5
+        )
+        self.research_pool = await asyncpg.create_pool(
+            self.research_url, min_size=1, max_size=3
+        )
+        logger.info("Database pools created")
     
-    async def shutdown(self):
-        """Clean shutdown."""
-        logger.info(f"[{self.cycle_id}] Shutting down...")
-        
-        # Update state
-        if self.consciousness:
-            await self.consciousness.update_state(
-                "sleeping",
-                f"Cycle complete. Msgs: {self.messages_processed}, "
-                f"Tasks: {self.tasks_executed}, Trades: {self.trades_executed}. "
-                f"Cost: ${self.api_spend:.4f}"
-            )
-            await self.consciousness.record_spend(self.api_spend)
-        
-        # Close broker
-        if self.broker:
-            try:
-                self.broker.disconnect()
-            except:
-                pass
-        
-        # Close pools
-        if self.research_pool:
-            await self.research_pool.close()
+    async def close(self):
+        """Close connection pools."""
         if self.trading_pool:
             await self.trading_pool.close()
-        
-        logger.info(f"[{self.cycle_id}] Shutdown complete")
+        if self.research_pool:
+            await self.research_pool.close()
+        logger.info("Database pools closed")
+
+
+# =============================================================================
+# CONSCIOUSNESS INTEGRATION
+# =============================================================================
+
+class ConsciousnessClient:
+    """Interface to consciousness framework."""
     
-    def _get_mode(self) -> str:
-        """Get current operating mode."""
-        if self.mode_override:
-            return self.mode_override
-        return MarketHours.get_current_mode()
+    def __init__(self, pool: asyncpg.Pool, agent_id: str):
+        self.pool = pool
+        self.agent_id = agent_id
     
-    async def run(self):
-        """Main agent run loop."""
-        mode = self._get_mode()
-        session_info = MarketHours.get_session_info()
-        
-        logger.info(f"[{self.cycle_id}] Starting cycle in '{mode}' mode")
-        logger.info(f"[{self.cycle_id}] Session: {session_info}")
-        
-        # Update state to active
-        if self.consciousness:
-            await self.consciousness.update_state("active", f"Cycle {self.cycle_id} - {mode}")
-        
-        try:
-            # Phase 1: Always process messages
-            await self._process_messages()
+    async def wake_up(self) -> Dict[str, Any]:
+        """Mark agent as awake and get pending messages."""
+        async with self.pool.acquire() as conn:
+            # Update status
+            await conn.execute("""
+                UPDATE claude_state SET
+                    status = 'awake',
+                    last_active = NOW()
+                WHERE agent_id = $1
+            """, self.agent_id)
             
-            # Phase 2: Mode-specific actions
-            if mode == "heartbeat":
-                # Messages only, no trading
-                if self.consciousness:
-                    await self.consciousness.add_observation(
-                        "Heartbeat cycle",
-                        f"Processed {self.messages_processed} messages, "
-                        f"{self.tasks_executed} tasks",
-                        "system"
-                    )
+            # Get pending messages
+            messages = await conn.fetch("""
+                SELECT message_id, from_agent, subject, body, priority
+                FROM claude_messages
+                WHERE to_agent = $1 AND status = 'pending'
+                ORDER BY priority DESC, created_at
+            """, self.agent_id)
             
-            elif mode in ("scan", "trade", "close"):
-                # Trading modes
-                await self._run_trading_loop(mode)
+            # Mark as read
+            if messages:
+                await conn.execute("""
+                    UPDATE claude_messages SET
+                        status = 'read',
+                        read_at = NOW()
+                    WHERE to_agent = $1 AND status = 'pending'
+                """, self.agent_id)
             
-            # Phase 3: Summary
-            await self._generate_summary(mode)
-            
-        except Exception as e:
-            logger.error(f"[{self.cycle_id}] Cycle error: {e}", exc_info=True)
-            self.errors.append(str(e))
-            
-            # Record error observation
-            if self.consciousness:
-                await self.consciousness.add_observation(
-                    "Cycle error",
-                    f"Error in {mode} mode: {e}",
-                    "system",
-                    confidence=1.0
-                )
-    
-    async def _process_messages(self):
-        """Process pending messages."""
-        if not self.consciousness:
-            return
-        
-        messages = await self.consciousness.get_pending_messages()
-        
-        if not messages:
-            logger.info(f"[{self.cycle_id}] No pending messages")
-            return
-        
-        logger.info(f"[{self.cycle_id}] Processing {len(messages)} messages")
-        
-        for msg in messages:
-            try:
-                msg_id = msg["id"]
-                from_agent = msg["from_agent"]
-                subject = msg["subject"]
-                body = msg["body"]
-                msg_type = msg["msg_type"]
-                
-                logger.info(f"[{self.cycle_id}] Message #{msg_id} from {from_agent}: {subject}")
-                
-                # Mark as read
-                await self.consciousness.mark_message_read(msg_id)
-                
-                # Handle task messages
-                if msg_type == "task" or "TASK:" in body:
-                    result = await self._execute_task(body)
-                    self.tasks_executed += 1
-                    
-                    # Send response
-                    await self.consciousness.send_message(
-                        to_agent=from_agent,
-                        subject=f"Task Report: {subject}",
-                        body=json.dumps(result, indent=2, default=str),
-                        msg_type="response"
-                    )
-                
-                # Mark as processed
-                await self.consciousness.mark_message_processed(msg_id)
-                self.messages_processed += 1
-                
-            except Exception as e:
-                logger.error(f"[{self.cycle_id}] Message error: {e}")
-                self.errors.append(f"Message #{msg['id']}: {e}")
-    
-    async def _execute_task(self, body: str) -> dict:
-        """Execute a task from message body."""
-        # Parse task
-        task_info = parse_task_message(body)
-        
-        if not task_info:
-            return {"error": "No TASK: found in message body", "success": False}
-        
-        task_name = task_info["task"]
-        params = task_info.get("params", {})
-        reason = task_info.get("reason", "")
-        
-        # Check if whitelisted
-        if not self.task_executor.is_whitelisted(task_name):
             return {
-                "error": f"Task '{task_name}' not whitelisted",
-                "success": False,
-                "requires_escalation": True
+                'agent_id': self.agent_id,
+                'messages': [dict(m) for m in messages]
             }
-        
-        # Execute
-        result = await self.task_executor.execute(task_name, params, reason)
-        return result
     
-    async def _run_trading_loop(self, mode: str):
-        """Run the Claude trading loop."""
-        if not self.broker or not self.tool_executor:
-            logger.warning(f"[{self.cycle_id}] Broker not available, skipping trading")
-            if self.consciousness:
-                await self.consciousness.add_observation(
-                    "Trading skipped",
-                    "Broker not available - trading modules not loaded",
-                    "system"
-                )
-            return
-        
-        # Build context
-        context = await self._build_trading_context(mode)
-        
-        # Prepare system prompt
-        system_prompt = TRADING_SYSTEM_PROMPT.format(context=context)
-        
-        # User message based on mode
-        if mode == "scan":
-            user_message = """It's pre-market. Scan the market for today's opportunities.
-            
-Find the top momentum stocks, analyze their technicals and news.
-Prepare a list of candidates for when trading opens.
-Do NOT execute any trades yet."""
-
-        elif mode == "trade":
-            user_message = """Trading session is active. Execute your strategy.
-
-1. Check your current positions
-2. Scan for new opportunities  
-3. Analyze candidates (technicals, patterns, news)
-4. Execute trades that pass risk checks
-5. Monitor existing positions
-
-Remember: ALWAYS check_risk before execute_trade."""
-
-        elif mode == "close":
-            user_message = """It's time to close positions.
-
-1. Close all open positions
-2. Log the reason for each close
-3. Generate a summary of today's trading
-4. Record any learnings
-
-This is mandatory - no positions should remain open."""
-
-        else:
-            return
-        
-        # Run Claude loop
-        messages = [{"role": "user", "content": user_message}]
-        iterations = 0
-        
-        while iterations < MAX_ITERATIONS:
-            iterations += 1
-            
-            try:
-                # Call Claude
-                response = self.claude.messages.create(
-                    model=MODEL_TRADING,
-                    max_tokens=MAX_TOKENS,
-                    system=system_prompt,
-                    tools=self.tools,
-                    messages=messages
-                )
-                
-                # Track spend (approximate: $3/M input, $15/M output for Sonnet)
-                input_tokens = response.usage.input_tokens
-                output_tokens = response.usage.output_tokens
-                cost = Decimal(str((input_tokens * 3 + output_tokens * 15) / 1_000_000))
-                self.api_spend += cost
-                
-                # Check for stop conditions
-                if response.stop_reason == "end_turn":
-                    # Extract final message
-                    for block in response.content:
-                        if hasattr(block, "text"):
-                            logger.info(f"[{self.cycle_id}] Claude: {block.text[:500]}...")
-                    break
-                
-                # Process tool uses
-                if response.stop_reason == "tool_use":
-                    tool_results = []
-                    
-                    for block in response.content:
-                        if block.type == "tool_use":
-                            tool_name = block.name
-                            tool_input = block.input
-                            
-                            logger.info(f"[{self.cycle_id}] Tool: {tool_name}({json.dumps(tool_input)[:100]})")
-                            
-                            # Execute tool
-                            result = self.tool_executor.execute(tool_name, tool_input)
-                            
-                            # Track trades
-                            if tool_name == "execute_trade" and result.get("success"):
-                                self.trades_executed += 1
-                            
-                            tool_results.append({
-                                "type": "tool_result",
-                                "tool_use_id": block.id,
-                                "content": json.dumps(result, default=str)
-                            })
-                    
-                    # Add to conversation
-                    messages.append({"role": "assistant", "content": response.content})
-                    messages.append({"role": "user", "content": tool_results})
-                
-                else:
-                    # Unexpected stop reason
-                    logger.warning(f"[{self.cycle_id}] Unexpected stop: {response.stop_reason}")
-                    break
-                    
-            except Exception as e:
-                logger.error(f"[{self.cycle_id}] Trading loop error: {e}")
-                self.errors.append(f"Trading: {e}")
-                break
-        
-        logger.info(f"[{self.cycle_id}] Trading loop complete: {iterations} iterations, {self.trades_executed} trades")
+    async def observe(self, category: str, content: str, metadata: Dict = None):
+        """Record an observation."""
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO claude_observations (agent_id, category, content, metadata)
+                VALUES ($1, $2, $3, $4)
+            """, self.agent_id, category, content, metadata or {})
     
-    async def _build_trading_context(self, mode: str) -> str:
-        """Build context string for Claude."""
-        context_parts = []
+    async def sleep(self):
+        """Mark agent as sleeping."""
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE claude_state SET
+                    status = 'sleeping',
+                    last_active = NOW()
+                WHERE agent_id = $1
+            """, self.agent_id)
+
+
+# =============================================================================
+# UNIFIED AGENT
+# =============================================================================
+
+class UnifiedAgent:
+    """
+    Unified trading agent for HKEX.
+    
+    Handles scanning, trading, monitoring, and consciousness.
+    """
+    
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        broker: Any,
+        market_data: Any,
+        anthropic_client: anthropic.Anthropic,
+        db: Database,
+    ):
+        self.config = config
+        self.broker = broker
+        self.market_data = market_data
+        self.anthropic = anthropic_client
+        self.db = db
         
-        # Session info
-        session = MarketHours.get_session_info()
-        context_parts.append(f"## Session\n{json.dumps(session, indent=2)}")
+        self.agent_id = config['agent']['id']
+        self.consciousness: Optional[ConsciousnessClient] = None
         
-        # Portfolio (if broker connected)
+        # Build signal thresholds from config
+        signal_config = config.get('signals', {})
+        self.thresholds = SignalThresholds(
+            stop_loss_strong=signal_config.get('stop_loss_strong', -0.03),
+            stop_loss_moderate=signal_config.get('stop_loss_moderate', -0.02),
+            take_profit_strong=signal_config.get('take_profit_strong', 0.08),
+            take_profit_moderate=signal_config.get('take_profit_moderate', 0.05),
+            rsi_overbought_strong=signal_config.get('rsi_overbought_strong', 85),
+            rsi_overbought_moderate=signal_config.get('rsi_overbought_moderate', 75),
+        )
+        
+        logger.info(f"UnifiedAgent initialized: {self.agent_id}")
+    
+    async def initialize(self):
+        """Initialize agent connections."""
+        await self.db.connect()
+        
+        if self.db.research_pool:
+            self.consciousness = ConsciousnessClient(
+                self.db.research_pool, self.agent_id
+            )
+        
+        # Connect broker
         if self.broker:
-            try:
-                portfolio = self.broker.get_portfolio()
-                context_parts.append(f"## Portfolio\n{json.dumps(portfolio, indent=2, default=str)}")
-            except Exception as e:
-                context_parts.append(f"## Portfolio\nError: {e}")
+            self.broker.connect()
         
-        # Recent learnings
-        if self.consciousness:
-            learnings = await self.consciousness.get_recent_learnings(5)
-            if learnings:
-                learnings_text = "\n".join([f"- {l['learning']}" for l in learnings])
-                context_parts.append(f"## Recent Learnings\n{learnings_text}")
-        
-        # Budget
-        if self.consciousness:
-            state = await self.consciousness.get_state()
-            spend = Decimal(str(state.get("api_spend_today", 0)))
-            remaining = DAILY_BUDGET - spend - self.api_spend
-            context_parts.append(f"## Budget\nSpent: ${spend + self.api_spend:.4f}\nRemaining: ${remaining:.4f}")
-        
-        return "\n\n".join(context_parts)
+        logger.info("Agent initialized")
     
-    async def _generate_summary(self, mode: str):
-        """Generate end-of-cycle summary."""
-        summary = {
-            "cycle_id": self.cycle_id,
-            "mode": mode,
-            "messages_processed": self.messages_processed,
-            "tasks_executed": self.tasks_executed,
-            "trades_executed": self.trades_executed,
-            "api_spend": float(self.api_spend),
-            "errors": self.errors,
-            "timestamp": datetime.now(HK_TZ).isoformat()
-        }
+    async def shutdown(self):
+        """Shutdown agent connections."""
+        if self.broker:
+            self.broker.disconnect()
+        
+        if self.consciousness:
+            await self.consciousness.sleep()
+        
+        await self.db.close()
+        logger.info("Agent shutdown complete")
+    
+    # =========================================================================
+    # MODE HANDLERS
+    # =========================================================================
+    
+    async def run_startup(self):
+        """Run pre-market startup reconciliation."""
+        logger.info("=" * 60)
+        logger.info("RUNNING STARTUP RECONCILIATION")
+        logger.info("=" * 60)
+        
+        # Wake up consciousness
+        if self.consciousness:
+            wake_result = await self.consciousness.wake_up()
+            if wake_result['messages']:
+                logger.info(f"Processing {len(wake_result['messages'])} messages")
+                for msg in wake_result['messages']:
+                    logger.info(f"  From {msg['from_agent']}: {msg['subject']}")
+        
+        # Run reconciliation
+        result = await run_startup_reconciliation()
         
         # Record observation
         if self.consciousness:
-            await self.consciousness.add_observation(
-                f"Cycle {self.cycle_id} complete",
-                json.dumps(summary, indent=2),
-                "system"
+            await self.consciousness.observe(
+                category='system',
+                content=f"Startup reconciliation: {result['reconciliation']['positions_found']} positions, "
+                        f"{len(result['reconciliation']['monitors_started'])} monitors started",
+                metadata=result['reconciliation']
             )
         
-        logger.info(f"[{self.cycle_id}] Summary: {json.dumps(summary)}")
+        return result
+    
+    async def run_trade_cycle(self):
+        """Run full trading cycle: scan -> analyze -> execute."""
+        logger.info("=" * 60)
+        logger.info("RUNNING TRADE CYCLE")
+        logger.info(f"Time: {datetime.now(HK_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        logger.info("=" * 60)
+        
+        # Wake up
+        if self.consciousness:
+            await self.consciousness.wake_up()
+        
+        # Check market hours
+        if not self._is_market_open():
+            logger.info("Market closed, skipping trade cycle")
+            return {'status': 'skipped', 'reason': 'market_closed'}
+        
+        # Get current portfolio
+        portfolio = await self._get_portfolio()
+        open_positions = portfolio.get('positions', [])
+        
+        logger.info(f"Current positions: {len(open_positions)}")
+        
+        # Check position limit
+        max_positions = self.config['trading']['max_positions']
+        if len(open_positions) >= max_positions:
+            logger.info(f"At max positions ({max_positions}), skipping scan")
+            return {'status': 'skipped', 'reason': 'max_positions'}
+        
+        # Scan for opportunities
+        candidates = await self._scan_market()
+        
+        if not candidates:
+            logger.info("No candidates found")
+            return {'status': 'complete', 'candidates': 0, 'trades': 0}
+        
+        logger.info(f"Found {len(candidates)} candidates")
+        
+        # Analyze and potentially execute
+        trades_executed = 0
+        for candidate in candidates[:3]:  # Limit to top 3
+            if len(open_positions) + trades_executed >= max_positions:
+                break
+            
+            decision = await self._analyze_candidate(candidate)
+            
+            if decision.get('action') == 'BUY':
+                result = await self._execute_entry(candidate, decision)
+                if result.get('success'):
+                    trades_executed += 1
+        
+        # Record observation
+        if self.consciousness:
+            await self.consciousness.observe(
+                category='trading',
+                content=f"Trade cycle complete: {len(candidates)} candidates, {trades_executed} trades",
+                metadata={'candidates': len(candidates), 'trades': trades_executed}
+            )
+        
+        return {'status': 'complete', 'candidates': len(candidates), 'trades': trades_executed}
+    
+    async def run_close_cycle(self):
+        """Review and optionally close positions."""
+        logger.info("=" * 60)
+        logger.info("RUNNING CLOSE CYCLE")
+        logger.info("=" * 60)
+        
+        if self.consciousness:
+            await self.consciousness.wake_up()
+        
+        portfolio = await self._get_portfolio()
+        positions = portfolio.get('positions', [])
+        
+        if not positions:
+            logger.info("No open positions")
+            return {'status': 'complete', 'positions_closed': 0}
+        
+        # For lunch break or EOD, consider closing positions with weak patterns
+        current_time = datetime.now(HK_TZ).time()
+        is_lunch = time(11, 50) <= current_time < time(12, 10)
+        is_eod = current_time >= time(15, 50)
+        
+        closed = 0
+        for pos in positions:
+            # Get technicals for analysis
+            technicals = self._get_technicals(pos['symbol'])
+            
+            analysis = analyze_position(
+                position=pos,
+                quote={'price': pos.get('current_price', pos['entry_price'])},
+                technicals=technicals,
+                thresholds=self.thresholds
+            )
+            
+            should_close = False
+            reason = ""
+            
+            if is_eod:
+                # EOD - close unless very strong hold
+                if analysis.recommendation != "HOLD" or not any(
+                    s.strength.value == 'strong' for s in analysis.hold_signals
+                ):
+                    should_close = True
+                    reason = "EOD close"
+            elif is_lunch:
+                # Lunch - close if any exit signals
+                if analysis.exit_signals:
+                    should_close = True
+                    reason = "Lunch break - weak pattern"
+            
+            if should_close:
+                result = await self._close_position(pos, reason)
+                if result.get('success'):
+                    closed += 1
+        
+        if self.consciousness:
+            await self.consciousness.observe(
+                category='trading',
+                content=f"Close cycle: {closed}/{len(positions)} positions closed",
+                metadata={'total': len(positions), 'closed': closed}
+            )
+        
+        return {'status': 'complete', 'positions_closed': closed}
+    
+    async def run_heartbeat(self):
+        """Process messages and update status only."""
+        logger.info("Running heartbeat")
+        
+        if self.consciousness:
+            wake_result = await self.consciousness.wake_up()
+            
+            for msg in wake_result.get('messages', []):
+                logger.info(f"Message from {msg['from_agent']}: {msg['subject']}")
+            
+            await self.consciousness.sleep()
+        
+        return {'status': 'complete', 'messages_processed': len(wake_result.get('messages', []))}
+    
+    # =========================================================================
+    # HELPER METHODS
+    # =========================================================================
+    
+    def _is_market_open(self) -> bool:
+        """Check if HKEX is open."""
+        now = datetime.now(HK_TZ)
+        if now.weekday() >= 5:
+            return False
+        
+        current_time = now.time()
+        
+        if time(9, 30) <= current_time < time(12, 0):
+            return True
+        if time(13, 0) <= current_time < time(16, 0):
+            return True
+        
+        return False
+    
+    async def _get_portfolio(self) -> Dict[str, Any]:
+        """Get current portfolio state."""
+        if not self.broker:
+            return {'positions': []}
+        
+        try:
+            positions = self.broker.get_positions()
+            return {
+                'positions': [
+                    {
+                        'symbol': p.symbol,
+                        'quantity': p.quantity,
+                        'entry_price': p.avg_cost,
+                        'current_price': p.current_price,
+                        'unrealized_pnl': p.unrealized_pnl,
+                        'pnl_pct': p.unrealized_pnl_pct / 100 if p.unrealized_pnl_pct else 0,
+                    }
+                    for p in positions
+                ]
+            }
+        except Exception as e:
+            logger.error(f"Error getting portfolio: {e}")
+            return {'positions': []}
+    
+    async def _scan_market(self) -> List[Dict[str, Any]]:
+        """Scan market for trading candidates."""
+        # Implementation depends on your scanner logic
+        logger.info("Scanning market...")
+        
+        # Placeholder - implement your scanning logic
+        return []
+    
+    async def _analyze_candidate(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze a candidate for entry."""
+        # Implementation depends on your analysis logic
+        logger.info(f"Analyzing {candidate.get('symbol')}...")
+        
+        # Placeholder
+        return {'action': 'SKIP', 'reason': 'Not implemented'}
+    
+    async def _execute_entry(
+        self,
+        candidate: Dict[str, Any],
+        decision: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute entry trade and start position monitor."""
+        symbol = candidate['symbol']
+        logger.info(f"Executing entry for {symbol}")
+        
+        try:
+            # Execute trade via broker
+            result = self.broker.execute_trade(
+                symbol=symbol,
+                side='buy',
+                quantity=decision.get('quantity', 100),
+                order_type='limit',
+                limit_price=decision.get('entry_price'),
+                stop_loss=decision.get('stop_loss'),
+                take_profit=decision.get('take_profit'),
+                reason=decision.get('reason', 'AI entry decision')
+            )
+            
+            if result and result.success:
+                # Record to database
+                async with self.db.trading_pool.acquire() as conn:
+                    position_id = await conn.fetchval("""
+                        INSERT INTO positions (
+                            symbol, side, quantity, entry_price, entry_time,
+                            stop_loss, take_profit, entry_reason, status
+                        ) VALUES ($1, 'long', $2, $3, NOW(), $4, $5, $6, 'open')
+                        RETURNING position_id
+                    """,
+                        symbol,
+                        result.quantity,
+                        result.fill_price or decision.get('entry_price'),
+                        decision.get('stop_loss'),
+                        decision.get('take_profit'),
+                        decision.get('reason')
+                    )
+                
+                # Start position monitor (non-blocking)
+                asyncio.create_task(
+                    start_position_monitor(
+                        broker=self.broker,
+                        market_data=self.market_data,
+                        anthropic_client=self.anthropic,
+                        position_id=position_id,
+                        symbol=symbol,
+                        entry_price=result.fill_price or decision.get('entry_price'),
+                        quantity=result.quantity,
+                        stop_price=decision.get('stop_loss'),
+                        target_price=decision.get('take_profit'),
+                        entry_reason=decision.get('reason', ''),
+                        thresholds=self.thresholds
+                    )
+                )
+                
+                logger.info(f"Entry executed and monitor started for {symbol}")
+                return {'success': True, 'position_id': position_id}
+            else:
+                return {'success': False, 'error': 'Order failed'}
+                
+        except Exception as e:
+            logger.error(f"Entry execution error: {e}")
+            return {'success': False, 'error': str(e)}
+    
+    async def _close_position(
+        self,
+        position: Dict[str, Any],
+        reason: str
+    ) -> Dict[str, Any]:
+        """Close a position."""
+        symbol = position['symbol']
+        quantity = position['quantity']
+        
+        try:
+            result = self.broker.execute_trade(
+                symbol=symbol,
+                side='sell',
+                quantity=quantity,
+                order_type='market',
+                reason=reason
+            )
+            
+            if result and result.success:
+                logger.info(f"Closed {symbol}: {reason}")
+                return {'success': True}
+            else:
+                return {'success': False}
+                
+        except Exception as e:
+            logger.error(f"Close position error: {e}")
+            return {'success': False, 'error': str(e)}
+    
+    def _get_technicals(self, symbol: str) -> Dict[str, Any]:
+        """Get technical indicators for symbol."""
+        if not self.market_data:
+            return {}
+        
+        try:
+            return self.market_data.get_technicals(symbol) or {}
+        except:
+            return {}
 
 
-# ============================================================================
-# MAIN ENTRY POINT
-# ============================================================================
+# =============================================================================
+# MAIN
+# =============================================================================
 
-async def main():
+async def main(mode: str, config_path: Optional[str] = None):
     """Main entry point."""
-    parser = argparse.ArgumentParser(description="Unified HKEX Trading Agent")
-    parser.add_argument(
-        "--mode", 
-        choices=["scan", "trade", "close", "heartbeat", "auto"],
-        default="auto",
-        help="Operating mode (default: auto-detect from market hours)"
+    
+    # Load config
+    config = load_config(config_path)
+    agent_id = config['agent']['id']
+    
+    logger.info(f"Starting {agent_id} in {mode} mode")
+    
+    # Get database URLs
+    trading_url = os.getenv("DATABASE_URL") or os.getenv("INTL_DATABASE_URL") or os.getenv("DEV_DATABASE_URL")
+    research_url = os.getenv("RESEARCH_DATABASE_URL")
+    
+    if not trading_url:
+        logger.error("No DATABASE_URL set")
+        sys.exit(1)
+    
+    # Create components
+    db = Database(trading_url, research_url)
+    
+    # Create broker (if available)
+    broker = None
+    market_data = None
+    if MoomooClient:
+        try:
+            broker = MoomooClient(paper_trading=True)
+        except:
+            logger.warning("Could not initialize broker")
+    
+    # Create Anthropic client
+    anthropic_client = anthropic.Anthropic()
+    
+    # Create agent
+    agent = UnifiedAgent(
+        config=config,
+        broker=broker,
+        market_data=market_data,
+        anthropic_client=anthropic_client,
+        db=db
     )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Force run even if budget exhausted"
-    )
-    
-    args = parser.parse_args()
-    
-    # Determine mode
-    mode_override = None if args.mode == "auto" else args.mode
-    
-    # Create and run agent
-    agent = UnifiedAgent(mode_override=mode_override)
     
     try:
         await agent.initialize()
-        await agent.run()
-    except Exception as e:
-        logger.error(f"Agent failed: {e}", exc_info=True)
-        raise
+        
+        # Run appropriate mode
+        if mode == 'startup':
+            result = await agent.run_startup()
+        elif mode == 'trade':
+            # Run startup first if first cycle of day
+            result = await agent.run_trade_cycle()
+        elif mode == 'close':
+            result = await agent.run_close_cycle()
+        elif mode == 'heartbeat':
+            result = await agent.run_heartbeat()
+        elif mode == 'scan':
+            result = await agent.run_trade_cycle()  # Same as trade for now
+        else:
+            logger.error(f"Unknown mode: {mode}")
+            result = {'error': f'Unknown mode: {mode}'}
+        
+        logger.info(f"Result: {result}")
+        
     finally:
         await agent.shutdown()
 
 
+def cli():
+    """Command line interface."""
+    parser = argparse.ArgumentParser(description='Unified Trading Agent')
+    parser.add_argument(
+        '--mode',
+        choices=['startup', 'scan', 'trade', 'close', 'heartbeat'],
+        default='heartbeat',
+        help='Operating mode'
+    )
+    parser.add_argument(
+        '--config',
+        type=str,
+        default=None,
+        help='Path to config file'
+    )
+    
+    args = parser.parse_args()
+    
+    asyncio.run(main(args.mode, args.config))
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    cli()
