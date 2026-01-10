@@ -341,8 +341,12 @@ class ToolExecutor:
             fill_price = result.get("filled_price") or result.get("fill_price")
             message = result.get("message", "")
 
-        # Check if successful
-        success_statuses = ["Filled", "FILLED", "Submitted", "SUBMITTED", "success"]
+        # Check if successful (Moomoo returns FILLED_ALL, SUBMITTING, etc.)
+        success_statuses = [
+            "Filled", "FILLED", "FILLED_ALL", "FILLED_PART",
+            "Submitted", "SUBMITTED", "SUBMITTING", "WAITING_SUBMIT",
+            "success"
+        ]
         if status in success_statuses:
             self.trades_executed += 1
             self.safety.record_trade()
