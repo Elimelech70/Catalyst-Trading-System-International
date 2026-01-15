@@ -31,6 +31,7 @@ Usage:
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -189,10 +190,12 @@ class ConsciousnessClient:
         """Record an observation."""
         async with self.pool.acquire() as conn:
             # Using research DB schema - observation_type instead of category, tags instead of metadata
+            # Serialize metadata to JSON string for DB storage
+            tags_json = json.dumps(metadata) if metadata else '{}'
             await conn.execute("""
                 INSERT INTO claude_observations (agent_id, observation_type, content, tags)
                 VALUES ($1, $2, $3, $4)
-            """, self.agent_id, category, content, metadata or {})
+            """, self.agent_id, category, content, tags_json)
     
     async def sleep(self):
         """Mark agent as sleeping."""
@@ -447,17 +450,21 @@ class UnifiedAgent:
     
     def _is_market_open(self) -> bool:
         """Check if HKEX is open."""
+        import os
+        if os.environ.get('FORCE_MARKET_OPEN'):
+            return True
+
         now = datetime.now(HK_TZ)
         if now.weekday() >= 5:
             return False
-        
+
         current_time = now.time()
-        
+
         if time(9, 30) <= current_time < time(12, 0):
             return True
         if time(13, 0) <= current_time < time(16, 0):
             return True
-        
+
         return False
     
     async def _get_portfolio(self) -> Dict[str, Any]:
