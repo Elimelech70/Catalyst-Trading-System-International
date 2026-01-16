@@ -10,6 +10,11 @@
 
 ## REVISION HISTORY
 
+**v3.5.0 (2026-01-16)** - CLEANUP & CONSOLIDATION
+- Removed agent.py (replaced by unified_agent.py)
+- Position monitoring only via systemd service (position_monitor_service.py)
+- Restored unified_agent.py after accidental deletion
+
 **v3.4.0 (2026-01-16)** - ORDER STATUS FIX
 - Fixed critical bug: orders marked "filled" when only "SUBMITTED"
 - Positions now only created when broker confirms actual fill
@@ -77,7 +82,7 @@
 
 | File | Version | Last Updated | Purpose |
 |------|---------|--------------|---------|
-| `agent.py` | 2.3.0 | 2026-01-06 | Main agent with workflow tracking |
+| `unified_agent.py` | 2.1.0 | 2026-01-16 | Main agent (cron: scan/trade/close modes) |
 | `tool_executor.py` | 2.6.0 | 2026-01-16 | Tool routing + order status fix |
 | `brokers/moomoo.py` | 1.2.1 | 2026-01-06 | Moomoo client (portfolio fixes) |
 | `data/patterns.py` | 1.1.0 | 2026-01-06 | Relaxed pattern detection |
