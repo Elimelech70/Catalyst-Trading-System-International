@@ -538,7 +538,7 @@ class UnifiedAgent:
                 reason=decision.get('reason', 'AI entry decision')
             )
             
-            if result and result.success:
+            if result and result.order_id and result.status not in ('FAILED', 'NO_POSITION'):
                 # Record to database
                 async with self.db.trading_pool.acquire() as conn:
                     position_id = await conn.fetchval("""
@@ -602,7 +602,7 @@ class UnifiedAgent:
                 reason=reason
             )
             
-            if result and result.success:
+            if result and result.order_id and result.status not in ('FAILED', 'NO_POSITION'):
                 logger.info(f"Closed {symbol}: {reason}")
                 return {'success': True}
             else:
