@@ -1,11 +1,18 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: tool_executor.py
-Version: 2.5.0
+Version: 2.6.0
 Last Updated: 2026-01-16
 Purpose: Routes Claude's tool calls to actual implementations
 
 REVISION HISTORY:
+v2.6.0 (2026-01-16) - Fix order status handling
+- Fixed: Only record position when broker confirms FILLED (not just SUBMITTED)
+- Separate filled_statuses, partial_filled_statuses, submitted_statuses
+- Orders with SUBMITTED status now recorded as "submitted" with filled_quantity=0
+- Positions only created when order is actually filled
+- Added warning log for submitted but unfilled orders
+
 v2.5.0 (2026-01-16) - Remove inline position monitor
 - Removed position_monitor.py import (was failing with DB errors)
 - Position monitoring now handled by position_monitor_service.py (systemd)
@@ -349,46 +356,70 @@ class ToolExecutor:
             fill_price = result.get("filled_price") or result.get("fill_price")
             message = result.get("message", "")
 
-        # Check if successful (Moomoo returns FILLED_ALL, SUBMITTING, etc.)
-        success_statuses = [
-            "Filled", "FILLED", "FILLED_ALL", "FILLED_PART",
-            "Submitted", "SUBMITTED", "SUBMITTING", "WAITING_SUBMIT",
-            "success"
-        ]
-        if status in success_statuses:
-            self.trades_executed += 1
-            self.safety.record_trade()
+        # Separate actually filled orders from just submitted orders
+        filled_statuses = ["Filled", "FILLED", "FILLED_ALL", "success"]
+        partial_filled_statuses = ["FILLED_PART"]
+        submitted_statuses = ["Submitted", "SUBMITTED", "SUBMITTING", "WAITING_SUBMIT"]
 
-            # Record position in database
+        is_filled = status in filled_statuses
+        is_partial = status in partial_filled_statuses
+        is_submitted = status in submitted_statuses
+
+        if is_filled or is_partial or is_submitted:
+            # Only count as executed trade if actually filled
+            if is_filled or is_partial:
+                self.trades_executed += 1
+                self.safety.record_trade()
+
+            # Record position in database ONLY if actually filled
             position_id = None
-            try:
-                position_id = self.db.record_position(
-                    symbol=symbol,
-                    side=side,
-                    quantity=quantity,
-                    entry_price=fill_price or limit_price or 0,
-                    stop_loss=stop_loss,
-                    take_profit=take_profit,
-                    broker_order_id=order_id,
-                    cycle_id=self.cycle_id,
-                    reason=reason,
-                )
-            except Exception as e:
-                logger.error(f"Failed to record position: {e}")
+            if is_filled or is_partial:
+                try:
+                    position_id = self.db.record_position(
+                        symbol=symbol,
+                        side=side,
+                        quantity=quantity,
+                        entry_price=fill_price or limit_price or 0,
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
+                        broker_order_id=order_id,
+                        cycle_id=self.cycle_id,
+                        reason=reason,
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to record position: {e}")
 
-            # Record order in database
+            # Record order in database with correct status
             try:
+                if is_filled:
+                    db_status = "filled"
+                    db_filled_qty = quantity
+                elif is_partial:
+                    db_status = "partial"
+                    # Use actual filled quantity from broker if available
+                    db_filled_qty = getattr(result, 'filled_quantity', 0) if hasattr(result, 'filled_quantity') else result.get('filled_quantity', 0) if isinstance(result, dict) else 0
+                    if not db_filled_qty:
+                        db_filled_qty = quantity  # Fallback
+                else:  # is_submitted
+                    db_status = "submitted"
+                    db_filled_qty = 0
+
                 self.db.record_order(
                     symbol=symbol,
                     side=side,
                     order_type=order_type.upper() if order_type else "MARKET",
                     quantity=quantity,
                     limit_price=limit_price,
-                    filled_quantity=quantity,
-                    filled_price=fill_price,
-                    status="filled",
+                    filled_quantity=db_filled_qty,
+                    filled_price=fill_price if (is_filled or is_partial) else None,
+                    status=db_status,
                     broker_order_id=order_id,
                 )
+
+                # Log warning for submitted but not filled orders
+                if is_submitted:
+                    logger.warning(f"Order {order_id} for {symbol} submitted but NOT filled yet - monitor for fill confirmation")
+
             except Exception as e:
                 logger.error(f"Failed to record order: {e}")
 

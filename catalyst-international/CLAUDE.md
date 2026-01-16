@@ -2,13 +2,19 @@
 
 **Name of Application**: Catalyst Trading System
 **Name of file**: CLAUDE.md
-**Version**: 3.3.0
+**Version**: 3.4.0
 **Last Updated**: 2026-01-16
 **Purpose**: Complete operational guidelines for Claude Code on HKEX production system
 
 ---
 
 ## REVISION HISTORY
+
+**v3.4.0 (2026-01-16)** - ORDER STATUS FIX
+- Fixed critical bug: orders marked "filled" when only "SUBMITTED"
+- Positions now only created when broker confirms actual fill
+- Submitted orders recorded with status="submitted", filled_quantity=0
+- Removed old position_monitor.py (replaced by systemd service)
 
 **v3.3.0 (2026-01-16)** - VOLUME RATIO & POSITION MONITOR FIXES
 - Fixed volume_ratio mismatch between scan_market() and get_quote()
@@ -72,11 +78,12 @@
 | File | Version | Last Updated | Purpose |
 |------|---------|--------------|---------|
 | `agent.py` | 2.3.0 | 2026-01-06 | Main agent with workflow tracking |
-| `tool_executor.py` | 2.4.0 | 2026-01-16 | Tool routing + position monitor fixes |
+| `tool_executor.py` | 2.6.0 | 2026-01-16 | Tool routing + order status fix |
 | `brokers/moomoo.py` | 1.2.1 | 2026-01-06 | Moomoo client (portfolio fixes) |
 | `data/patterns.py` | 1.1.0 | 2026-01-06 | Relaxed pattern detection |
 | `data/market.py` | 2.3.0 | 2026-01-16 | Fixed volume_ratio calculation |
 | `data/news.py` | 1.0.0 | 2025-12-06 | News and sentiment |
+| `position_monitor_service.py` | 1.0.0 | 2026-01-16 | Systemd service for position monitoring |
 | `config/settings.yaml` | - | 2026-01-16 | max_iterations: 35 |
 
 ### Pattern Types (v1.1.0)
