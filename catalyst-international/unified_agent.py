@@ -57,7 +57,16 @@ except ImportError:
 
 from signals import analyze_position, SignalThresholds, DEFAULT_THRESHOLDS
 from startup_monitor import run_startup_reconciliation, get_monitor_health_report
-from position_monitor import start_position_monitor
+
+# Position monitoring now handled by position_monitor_service.py (systemd)
+# Old position_monitor.py was removed due to DB constraint errors
+try:
+    from position_monitor import start_position_monitor
+    POSITION_MONITOR_AVAILABLE = True
+except ImportError:
+    start_position_monitor = None
+    POSITION_MONITOR_AVAILABLE = False
+    logging.getLogger(__name__).info("Position monitor not available - using systemd service instead")
 
 # Configure logging
 logging.basicConfig(
@@ -547,24 +556,26 @@ class UnifiedAgent:
                         decision.get('reason')
                     )
                 
-                # Start position monitor (non-blocking)
-                asyncio.create_task(
-                    start_position_monitor(
-                        broker=self.broker,
-                        market_data=self.market_data,
-                        anthropic_client=self.anthropic,
-                        position_id=position_id,
-                        symbol=symbol,
-                        entry_price=result.fill_price or decision.get('entry_price'),
-                        quantity=result.quantity,
-                        stop_price=decision.get('stop_loss'),
-                        target_price=decision.get('take_profit'),
-                        entry_reason=decision.get('reason', ''),
-                        thresholds=self.thresholds
+                # Position monitoring now handled by position_monitor_service.py (systemd)
+                if POSITION_MONITOR_AVAILABLE and start_position_monitor:
+                    asyncio.create_task(
+                        start_position_monitor(
+                            broker=self.broker,
+                            market_data=self.market_data,
+                            anthropic_client=self.anthropic,
+                            position_id=position_id,
+                            symbol=symbol,
+                            entry_price=result.fill_price or decision.get('entry_price'),
+                            quantity=result.quantity,
+                            stop_price=decision.get('stop_loss'),
+                            target_price=decision.get('take_profit'),
+                            entry_reason=decision.get('reason', ''),
+                            thresholds=self.thresholds
+                        )
                     )
-                )
-                
-                logger.info(f"Entry executed and monitor started for {symbol}")
+                    logger.info(f"Entry executed and inline monitor started for {symbol}")
+                else:
+                    logger.info(f"Entry executed for {symbol} - monitoring via systemd service")
                 return {'success': True, 'position_id': position_id}
             else:
                 return {'success': False, 'error': 'Order failed'}
