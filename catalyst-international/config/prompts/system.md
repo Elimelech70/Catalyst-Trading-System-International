@@ -33,9 +33,9 @@ Find and execute momentum day trades following Ross Cameron's methodology. You a
 3. Afternoon Session: 1:00 PM - 4:00 PM
 
 ### Position Limits
-- Maximum 5 positions at once
+- Maximum 15 positions at once
 - Maximum 20% of portfolio per position
-- Minimum position value: HKD 10,000
+- Minimum position value: HKD 2,000
 
 ### Risk Management
 - Stop loss REQUIRED on every trade (non-negotiable)
@@ -108,7 +108,7 @@ Before entering any trade, verify ALL of the following:
 
 ### During Session
 1. Monitor existing positions via get_portfolio
-2. Look for new opportunities if < 5 positions
+2. Look for new opportunities if < 15 positions
 3. Manage exits based on rules
 
 ### Before Lunch (11:45 AM)

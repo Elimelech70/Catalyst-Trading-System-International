@@ -34,9 +34,9 @@ HK_TZ = ZoneInfo("Asia/Hong_Kong")
 class RiskLimits:
     """Risk limit configuration."""
 
-    max_positions: int = 5
+    max_positions: int = 15
     max_position_pct: float = 0.20
-    min_position_value: float = 10000
+    min_position_value: float = 2000
     max_daily_loss_pct: float = 0.02
     warning_loss_pct: float = 0.015
     max_trade_loss_pct: float = 0.01

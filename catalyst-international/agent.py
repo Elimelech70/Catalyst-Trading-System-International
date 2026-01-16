@@ -244,9 +244,12 @@ class WorkflowTracker:
         bar += "]"
         
         pct = (len(completed) / len(self.ALL_PHASES)) * 100
-        print(f"\r{bar} {pct:.0f}% - {current or 'Starting...'}", end="", flush=True)
-        if current == "COMPLETE" or pct == 100:
-            print()  # Newline when done
+        try:
+            print(f"\r{bar} {pct:.0f}% - {current or 'Starting...'}", end="", flush=True)
+            if current == "COMPLETE" or pct == 100:
+                print()  # Newline when done
+        except BrokenPipeError:
+            pass  # Ignore if stdout is closed
             
     def get_summary(self) -> Dict[str, Any]:
         """Get workflow summary."""
@@ -322,7 +325,7 @@ For each trading cycle:
 5. **IMMEDIATELY** call close_all if daily loss exceeds 5% (paper mode)
 6. **PREFER** limit orders over market orders
 7. **CLOSE** positions before lunch break (12:00) unless strong conviction
-8. **MAXIMUM** 5 positions at any time
+8. **MAXIMUM** 15 positions at any time
 9. **MAXIMUM** 25% of portfolio per position (paper mode allows larger)
 
 ## TIERED ENTRY CRITERIA (Use ANY tier that matches)
@@ -357,7 +360,7 @@ Only skip a trade if:
 - RSI > 80 (severely overbought) or < 20 (oversold crash)
 - Volume is BELOW average (no interest)
 - check_risk returns false
-- Already at max positions (5)
+- Already at max positions (15)
 - No clear stop loss level identifiable
 
 ## Pattern Detection - Relaxed Rules

@@ -1,4 +1,0 @@
-# Additional requirements for consciousness integration
-# Add these to existing requirements.txt
-
-asyncpg>=0.29.0
