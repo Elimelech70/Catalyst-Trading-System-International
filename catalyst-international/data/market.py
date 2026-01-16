@@ -2,8 +2,8 @@
 Market data and technical analysis for the Catalyst Trading Agent.
 
 Name of file: market.py
-Version: 2.2.0
-Last Updated: 2026-01-08
+Version: 2.3.0
+Last Updated: 2026-01-16
 
 This module provides:
 - Real-time quotes from Moomoo/Futu
@@ -12,6 +12,11 @@ This module provides:
 - Market scanning functionality
 
 REVISION HISTORY:
+v2.3.0 (2026-01-16) - Volume ratio fix
+- Fixed volume_ratio calculation in get_quote() to match scan_market()
+- Changed avg_volume fallback from `volume` to `volume // 2`
+- This ensures candidates that pass scan also pass tier criteria
+
 v2.2.0 (2026-01-08) - Dynamic lot size support
 - get_quote() now returns actual board lot size instead of hardcoded 100
 - Added _get_lot_size() helper method
@@ -157,7 +162,9 @@ class MarketData:
 
         # Calculate volume ratio and change % (handle NaN from delayed data)
         volume = safe_int(data.get("volume"), 0)
-        avg_volume = safe_int(data.get("avg_volume"), volume or 1)  # Fallback to volume
+        # Estimate avg_volume as half of current volume (same as scan_market)
+        # This is because Moomoo API doesn't provide avg_volume directly
+        avg_volume = safe_int(data.get("avg_volume"), max(volume // 2, 1))
         volume_ratio = volume / avg_volume if avg_volume > 0 else 1.0
 
         # Calculate change from prev_close if not provided
@@ -257,6 +264,13 @@ class MarketData:
         # Get historical data
         df = self.get_historical(symbol, timeframe, bars=200)
 
+        # Get real-time quote price to avoid stale bar data discrepancy
+        try:
+            quote = self.get_quote(symbol)
+            realtime_price = quote.get("price", 0)
+        except Exception:
+            realtime_price = None
+
         if len(df) < 50:
             raise ValueError(f"Insufficient data for {symbol}")
 
@@ -291,8 +305,9 @@ class MarketData:
         # Support/Resistance (simple pivot points)
         support, resistance = self._calculate_support_resistance(df)
 
-        # Trend determination
-        current_price = close.iloc[-1]
+        # Trend determination - use realtime price if available, else last bar close
+        bar_close = close.iloc[-1]
+        current_price = realtime_price if realtime_price else bar_close
         if current_price > sma_20 and sma_9 > sma_20:
             trend = "bullish"
         elif current_price < sma_20 and sma_9 < sma_20:

@@ -1,14 +1,21 @@
 # Catalyst Trading System - Functional Specification
 
-**Name of Application:** Catalyst Trading System  
-**Name of file:** functional-specification.md  
-**Version:** 8.1.0  
-**Last Updated:** 2026-01-06  
+**Name of Application:** Catalyst Trading System
+**Name of file:** functional-specification.md
+**Version:** 8.2.0
+**Last Updated:** 2026-01-16
 **Purpose:** Complete functional specifications for trading tools and patterns
 
 ---
 
 ## REVISION HISTORY
+
+- **v8.2.0 (2026-01-16)** - Volume Ratio & Position Monitor Fixes
+  - Fixed volume_ratio calculation in market.py get_quote() to match scan_market()
+  - Fixed position monitor: now passes position_id instead of safety_validator
+  - Fixed position monitor: runs in background thread to avoid event loop conflicts
+  - Increased max_iterations from 20 to 35 in config/settings.yaml
+  - Successful trades now execute consistently
 
 - **v8.1.0 (2026-01-06)** - Pattern Detection & Tool Updates
   - Added patterns.py v1.1.0 new pattern types (near_breakout, momentum_continuation)

@@ -1,11 +1,16 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: tool_executor.py
-Version: 2.3.0
-Last Updated: 2026-01-06
+Version: 2.4.0
+Last Updated: 2026-01-16
 Purpose: Routes Claude's tool calls to actual implementations
 
 REVISION HISTORY:
+v2.4.0 (2026-01-16) - Position monitor fixes
+- Fixed: pass position_id instead of safety_validator to start_position_monitor()
+- Fixed: run position monitor in background thread to avoid event loop conflicts
+- Captures position_id from record_position() return value
+
 v2.3.0 (2026-01-06) - Order logging
 - Added order recording to database after successful trades
 
@@ -38,6 +43,7 @@ position monitoring that runs until exit.
 import asyncio
 import json
 import logging
+import threading
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -352,8 +358,9 @@ class ToolExecutor:
             self.safety.record_trade()
 
             # Record position in database
+            position_id = None
             try:
-                self.db.record_position(
+                position_id = self.db.record_position(
                     symbol=symbol,
                     side=side,
                     quantity=quantity,
@@ -414,37 +421,48 @@ class ToolExecutor:
             monitor_error = None
             
             if (
-                side.upper() == "BUY" 
-                and self.agent 
+                side.upper() == "BUY"
+                and self.agent
                 and POSITION_MONITOR_AVAILABLE
+                and position_id is not None
             ):
                 try:
                     # Get anthropic client from agent
                     anthropic_client = getattr(self.agent, 'client', None)
-                    
+
                     if anthropic_client:
-                        logger.info(f"Starting position monitor for {symbol}")
-                        
-                        # Run async monitoring
-                        monitor_result = asyncio.run(
-                            start_position_monitor(
-                                broker=self.broker,
-                                market_data=self.market,
-                                anthropic_client=anthropic_client,
-                                safety_validator=self.safety,
-                                symbol=symbol,
-                                entry_price=fill_price or limit_price or 0,
-                                quantity=quantity,
-                                stop_price=stop_loss,
-                                target_price=take_profit,
-                                entry_reason=reason,
-                            )
-                        )
-                        
-                        logger.info(f"Position monitor completed: {monitor_result}")
+                        logger.info(f"Starting position monitor for {symbol} (position_id={position_id})")
+
+                        # Run position monitor in background thread to avoid event loop conflicts
+                        def run_monitor():
+                            try:
+                                loop = asyncio.new_event_loop()
+                                asyncio.set_event_loop(loop)
+                                result = loop.run_until_complete(
+                                    start_position_monitor(
+                                        broker=self.broker,
+                                        market_data=self.market,
+                                        anthropic_client=anthropic_client,
+                                        position_id=position_id,
+                                        symbol=symbol,
+                                        entry_price=fill_price or limit_price or 0,
+                                        quantity=quantity,
+                                        stop_price=stop_loss,
+                                        target_price=take_profit,
+                                        entry_reason=reason,
+                                    )
+                                )
+                                logger.info(f"Position monitor completed: {result}")
+                                loop.close()
+                            except Exception as e:
+                                logger.error(f"Position monitor thread error: {e}")
+
+                        monitor_thread = threading.Thread(target=run_monitor, daemon=True)
+                        monitor_thread.start()
+                        logger.info(f"Position monitor thread started for {symbol}")
                     else:
                         logger.warning("No anthropic client available for monitoring")
-                        
+
                 except Exception as e:
                     logger.error(f"Position monitor failed: {e}", exc_info=True)
                     monitor_error = str(e)

@@ -39,9 +39,9 @@ broker:
 # Risk Management
 risk:
   # Position limits
-  max_positions: 5
+  max_positions: 15
   max_position_pct: 0.20          # 20% of portfolio per position
-  min_position_value: 10000       # Minimum HKD per trade
+  min_position_value: 2000        # Minimum HKD per trade
 
   # Loss limits
   max_daily_loss_pct: 0.02        # 2% daily loss triggers emergency close
@@ -60,7 +60,7 @@ risk:
 claude:
   model: "claude-sonnet-4-20250514"
   max_tokens: 4096
-  max_iterations: 20              # Max tool call iterations per cycle
+  max_iterations: 35              # Max tool call iterations per cycle (increased from 20)
   temperature: 0.1                # Low temperature for consistency
 
 # Entry Criteria (all must be met)

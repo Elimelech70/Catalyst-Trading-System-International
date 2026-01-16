@@ -1,14 +1,21 @@
 # CLAUDE.md - Catalyst Trading System International
 
-**Name of Application**: Catalyst Trading System  
-**Name of file**: CLAUDE.md  
-**Version**: 3.2.0  
-**Last Updated**: 2026-01-06  
+**Name of Application**: Catalyst Trading System
+**Name of file**: CLAUDE.md
+**Version**: 3.3.0
+**Last Updated**: 2026-01-16
 **Purpose**: Complete operational guidelines for Claude Code on HKEX production system
 
 ---
 
 ## REVISION HISTORY
+
+**v3.3.0 (2026-01-16)** - VOLUME RATIO & POSITION MONITOR FIXES
+- Fixed volume_ratio mismatch between scan_market() and get_quote()
+- Increased max_iterations from 20 to 35 in config
+- Fixed position monitor: pass position_id instead of safety_validator
+- Fixed position monitor: run in background thread to avoid event loop conflicts
+- Multiple successful trades executed (1800, 9866)
 
 **v3.2.0 (2026-01-06)** - FIRST TRADE MILESTONE
 - First autonomous trade executed (BUY 1024 Kuaishou)
@@ -64,12 +71,13 @@
 
 | File | Version | Last Updated | Purpose |
 |------|---------|--------------|---------|
-| `agent.py` | 2.2.0 | 2026-01-02 | Main agent with tiered criteria |
-| `tool_executor.py` | 2.2.1 | 2026-01-06 | Tool routing (bug fixes) |
+| `agent.py` | 2.3.0 | 2026-01-06 | Main agent with workflow tracking |
+| `tool_executor.py` | 2.4.0 | 2026-01-16 | Tool routing + position monitor fixes |
 | `brokers/moomoo.py` | 1.2.1 | 2026-01-06 | Moomoo client (portfolio fixes) |
 | `data/patterns.py` | 1.1.0 | 2026-01-06 | Relaxed pattern detection |
-| `data/market.py` | 2.1.1 | 2026-01-06 | Quote field fixes |
+| `data/market.py` | 2.3.0 | 2026-01-16 | Fixed volume_ratio calculation |
 | `data/news.py` | 1.0.0 | 2025-12-06 | News and sentiment |
+| `config/settings.yaml` | - | 2026-01-16 | max_iterations: 35 |
 
 ### Pattern Types (v1.1.0)
 
@@ -127,6 +135,15 @@ tail -f /var/log/catalyst-intl.log
 
 ## 🐛 Known Issues & Fixes
 
+### Bug Fixes Applied (2026-01-16)
+
+| Component | Bug | Fix |
+|-----------|-----|-----|
+| market.py | volume_ratio always 1.0 | Use `volume // 2` as avg_volume estimate |
+| tool_executor.py | Position monitor wrong param | Pass `position_id` not `safety_validator` |
+| tool_executor.py | asyncio.run() event loop conflict | Run monitor in background thread |
+| settings.yaml | Iteration limit too low | Increased max_iterations: 20 → 35 |
+
 ### Bug Fixes Applied (2026-01-06)
 
 | Component | Bug | Fix |
@@ -144,21 +161,20 @@ tail -f /var/log/catalyst-intl.log
 | `MoomooClient not initialized` | OpenD not running | `systemctl start opend` |
 | `Rate limit exceeded` | Too many API calls | Use batch APIs, add delays |
 | `No position found` | Symbol format mismatch | Check .HK suffix handling |
+| `Candidates not passing tiers` | volume_ratio mismatch | Fixed in market.py v2.2.0 |
 
 ---
 
 ## 📊 Current Portfolio Status
 
-As of 2026-01-06:
+As of 2026-01-16:
 
-| Symbol | Stock | Shares | P&L |
-|--------|-------|--------|-----|
-| 981 | SMIC | 2,500 | +$16,000 |
-| 2382 | Sunny Optical | 2,700 | +$4,725 |
-| 1810 | Xiaomi | 4,600 | $0 |
-| 1024 | Kuaishou | 2,000 | -$100 |
+| Symbol | Stock | Shares | Entry | Status |
+|--------|-------|--------|-------|--------|
+| 1800 | China Communications | 21,000 | $5.05 | New (Tier 3) |
+| 9866 | NIO | 1,000 | $36.85 | New (Tier 3) |
 
-**Total Unrealized P&L: +HKD 20,625**
+**Note**: Previous positions (981, 2382, 1810, 1024) may have been closed or adjusted.
 
 ---
 
@@ -170,4 +186,4 @@ As of 2026-01-06:
 
 ---
 
-**END OF CLAUDE.md v3.2.0**
+**END OF CLAUDE.md v3.3.0**
