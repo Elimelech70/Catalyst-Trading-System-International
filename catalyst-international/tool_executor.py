@@ -1,11 +1,16 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: tool_executor.py
-Version: 2.4.0
+Version: 2.5.0
 Last Updated: 2026-01-16
 Purpose: Routes Claude's tool calls to actual implementations
 
 REVISION HISTORY:
+v2.5.0 (2026-01-16) - Remove inline position monitor
+- Removed position_monitor.py import (was failing with DB errors)
+- Position monitoring now handled by position_monitor_service.py (systemd)
+- Disabled inline monitor calls after trades
+
 v2.4.0 (2026-01-16) - Position monitor fixes
 - Fixed: pass position_id instead of safety_validator to start_position_monitor()
 - Fixed: run position monitor in background thread to avoid event loop conflicts
@@ -56,13 +61,10 @@ from data.patterns import get_pattern_detector
 from safety import get_safety_validator, validate_trade_request
 from tools import validate_tool_input
 
-# Position monitoring import
-try:
-    from position_monitor import start_position_monitor
-    POSITION_MONITOR_AVAILABLE = True
-except ImportError:
-    POSITION_MONITOR_AVAILABLE = False
-    start_position_monitor = None
+# Position monitoring disabled - now handled by position_monitor_service.py (systemd)
+# The old position_monitor.py was removed due to database constraint errors
+POSITION_MONITOR_AVAILABLE = False
+start_position_monitor = None
 
 logger = logging.getLogger(__name__)
 
