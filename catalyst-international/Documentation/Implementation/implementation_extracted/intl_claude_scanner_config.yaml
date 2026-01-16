@@ -1,0 +1,89 @@
+# ==============================================================================
+# Name of Application: Catalyst Trading System
+# Name of file: intl_claude_config.yaml (scanner section addition)
+# Version: 2.1.0
+# Last Updated: 2026-01-16
+# Purpose: Scanner configuration for intl_claude HKEX trading
+#
+# REVISION HISTORY:
+# v2.1.0 (2026-01-16) - Added scanner configuration section
+# ==============================================================================
+
+# ADD THIS SECTION to your existing intl_claude_config.yaml
+# or merge with existing scanner config
+
+# ==============================================================================
+# SCANNER CONFIGURATION
+# ==============================================================================
+scanner:
+  # Sectors to scan (HKEX plate codes)
+  # See: https://openapi.moomoo.com for plate codes
+  sectors:
+    - "HK.BK1587"   # HK Tech stocks
+    - "HK.BK1588"   # HK Finance stocks
+    - "HK.BK1589"   # HK Consumer stocks
+    - "HK.BK1590"   # HK Healthcare
+    - "HK.BK1910"   # Hang Seng Index constituents
+    
+  # Volume filter - minimum volume vs 20-day average
+  min_volume_ratio: 1.3
+  
+  # Price change filters (percentage)
+  min_change_pct: 1.0      # Minimum daily change to consider
+  max_change_pct: 15.0     # Maximum (avoid overextended)
+  
+  # Price range in HKD
+  min_price: 5.0           # Avoid penny stocks
+  max_price: 500.0         # Stay within position sizing
+  
+  # Liquidity filter - minimum daily turnover in HKD
+  min_turnover: 10000000   # 10M HKD minimum
+  
+  # How many stocks to analyze from each sector
+  max_candidates: 50
+  
+  # How many top candidates to return
+  top_n: 10
+  
+  # Whether to run pattern detection (slower but more accurate)
+  detect_patterns: false
+  
+  # Watchlist override - if set, only scan these symbols
+  # Useful for focused scanning
+  watchlist: null
+  # watchlist:
+  #   - "700"      # Tencent
+  #   - "9988"     # Alibaba
+  #   - "1810"     # Xiaomi
+  #   - "2382"     # Sunny Optical
+  #   - "981"      # SMIC
+
+# ==============================================================================
+# TRADING CONFIGURATION (ensure these exist)
+# ==============================================================================
+trading:
+  max_position_size: 50000       # HKD per position
+  max_daily_trades: 5
+  max_open_positions: 3
+  stop_loss_pct: -0.03           # 3% stop loss
+  take_profit_pct: 0.08          # 8% take profit
+  
+# ==============================================================================
+# AGENT CONFIGURATION (ensure this exists)
+# ==============================================================================
+agent:
+  id: "intl_claude"
+  market: "HKEX"
+  timezone: "Asia/Hong_Kong"
+  daily_budget: 5.00             # Claude API budget
+
+# ==============================================================================
+# SIGNAL THRESHOLDS (for position monitoring)
+# ==============================================================================
+signals:
+  stop_loss_strong: -0.03
+  stop_loss_moderate: -0.02
+  take_profit_strong: 0.08
+  take_profit_moderate: 0.05
+  rsi_overbought_strong: 85
+  rsi_overbought_moderate: 75
