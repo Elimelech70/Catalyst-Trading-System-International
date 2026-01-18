@@ -1,11 +1,19 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: unified_agent.py
-Version: 2.0.0
-Last Updated: 2026-01-10
-Purpose: Unified trading agent with consciousness and position monitoring
+Version: 3.0.0
+Last Updated: 2026-01-17
+Purpose: Unified trading agent with Claude AI loop and workflow tracking
 
 REVISION HISTORY:
+v3.0.0 (2026-01-17) - MERGED AGENT.PY FUNCTIONALITY
+- Added WorkflowTracker class for 10-phase progress tracking
+- Added SYSTEM_PROMPT with tiered entry criteria (Tier 1/2/3)
+- Added Claude API tool-use loop (replaces stub implementations)
+- Added progress bar display during execution
+- Added --force and --live CLI flags
+- Removed placeholder methods (now handled by Claude loop)
+
 v2.0.0 (2026-01-10) - Ecosystem restructure
 - Startup monitor integration
 - Position monitor integration (auto-start on BUY)
@@ -17,13 +25,14 @@ v1.0.0 (2026-01-05) - Initial unified agent
 
 Description:
 Single-agent architecture for HKEX trading. Handles:
-- Market scanning and opportunity detection
-- Entry decision making with AI
+- Market scanning and opportunity detection via Claude AI
+- Entry decision making with tiered criteria
 - Position monitoring with pattern-based exits
 - Consciousness integration for memory and learning
+- Real-time workflow tracking with progress bar
 
 Usage:
-    python unified_agent.py --mode trade
+    python unified_agent.py --mode trade --force
     python unified_agent.py --mode close
     python unified_agent.py --mode heartbeat
     python unified_agent.py --mode scan
@@ -35,6 +44,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from datetime import datetime, time
 from pathlib import Path
 from typing import Dict, Any, Optional, List
@@ -44,14 +54,21 @@ import yaml
 import asyncpg
 import anthropic
 
+from tools import TOOLS
+from tool_executor import create_tool_executor
+from alerts import create_alert_callback, get_alert_sender
+from data.database import get_database, init_database
+
 # Local imports - adjust path as needed
 try:
-    from brokers.moomoo import MoomooClient
+    from brokers.moomoo import MoomooClient, init_moomoo_client, get_moomoo_client
     from data.market import MarketData
     from safety import SafetyValidator
 except ImportError:
     # Running standalone - mock imports
     MoomooClient = None
+    init_moomoo_client = None
+    get_moomoo_client = None
     MarketData = None
     SafetyValidator = None
 
@@ -116,6 +133,172 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
             'daily_budget_usd': 5.00,
         }
     }
+
+
+# =============================================================================
+# WORKFLOW TRACKER - Real-time visibility into trading cycle
+# =============================================================================
+
+# All workflow phases in order
+WORKFLOW_PHASES = ["INIT", "PORTFOLIO", "SCAN", "ANALYZE", "DECIDE", "VALIDATE", "EXECUTE", "MONITOR", "LOG", "COMPLETE"]
+
+
+class WorkflowTracker:
+    """Track workflow phases in real-time.
+
+    Stores progress in the consciousness database for visibility
+    via MCP tools and web dashboard.
+    """
+
+    def __init__(self, cycle_id: str, agent_id: str = "intl_claude"):
+        self.cycle_id = cycle_id
+        self.agent_id = agent_id
+        self.phases: List[Dict] = []
+        self.current_phase: Optional[str] = None
+        self.started_at = datetime.now(HK_TZ)
+        self._pool = None
+
+    async def connect(self):
+        """Connect to consciousness database."""
+        if self._pool is None:
+            database_url = os.environ.get("RESEARCH_DATABASE_URL")
+            if database_url:
+                try:
+                    self._pool = await asyncpg.create_pool(database_url, min_size=1, max_size=2)
+                    logger.debug("WorkflowTracker connected to consciousness DB")
+                except Exception as e:
+                    logger.warning(f"Could not connect to consciousness DB: {e}")
+
+    async def disconnect(self):
+        """Disconnect from database."""
+        if self._pool:
+            await self._pool.close()
+            self._pool = None
+
+    async def start_phase(self, phase: str, description: str = "", details: Dict[str, Any] = None):
+        """Start a new workflow phase."""
+        now = datetime.now(HK_TZ)
+
+        record = {
+            "phase": phase,
+            "status": "started",
+            "started_at": now.isoformat(),
+            "completed_at": None,
+            "duration_ms": None,
+            "details": details or {"description": description},
+            "error": None
+        }
+        self.phases.append(record)
+        self.current_phase = phase
+
+        logger.info(f"[{self.cycle_id}] ▶ Phase {phase}: {description}")
+        self._print_progress_bar()
+
+        await self._store_progress()
+
+    async def complete_phase(self, phase: str, **results):
+        """Complete a workflow phase."""
+        now = datetime.now(HK_TZ)
+
+        for record in reversed(self.phases):
+            if record["phase"] == phase and record["status"] == "started":
+                started = datetime.fromisoformat(record["started_at"])
+                record["status"] = "completed"
+                record["completed_at"] = now.isoformat()
+                record["duration_ms"] = int((now - started).total_seconds() * 1000)
+                if results:
+                    record["details"] = {**(record["details"] or {}), **results}
+                break
+
+        result_str = ", ".join(f"{k}={v}" for k, v in results.items()) if results else ""
+        logger.info(f"[{self.cycle_id}] ✓ Phase {phase} completed ({result_str})")
+        self._print_progress_bar()
+
+        await self._store_progress()
+
+    async def error_phase(self, phase: str, error: str):
+        """Mark a phase as errored."""
+        now = datetime.now(HK_TZ)
+
+        for record in reversed(self.phases):
+            if record["phase"] == phase and record["status"] == "started":
+                started = datetime.fromisoformat(record["started_at"])
+                record["status"] = "error"
+                record["completed_at"] = now.isoformat()
+                record["duration_ms"] = int((now - started).total_seconds() * 1000)
+                record["error"] = error
+                break
+
+        logger.error(f"[{self.cycle_id}] ✗ Phase {phase} error: {error}")
+
+        await self._store_progress()
+
+    async def _store_progress(self):
+        """Store current progress in consciousness database."""
+        if not self._pool:
+            await self.connect()
+
+        if not self._pool:
+            return
+
+        try:
+            progress = {
+                "cycle_id": self.cycle_id,
+                "agent_id": self.agent_id,
+                "started_at": self.started_at.isoformat(),
+                "current_phase": self.current_phase,
+                "phases": self.phases,
+                "updated_at": datetime.now(HK_TZ).isoformat()
+            }
+
+            async with self._pool.acquire() as conn:
+                # Store as observation with type 'workflow'
+                await conn.execute("""
+                    INSERT INTO claude_observations
+                    (agent_id, observation_type, content, tags)
+                    VALUES ($1, 'workflow', $2, $3)
+                """, self.agent_id, f"cycle:{self.cycle_id}", json.dumps(progress))
+
+        except Exception as e:
+            logger.debug(f"Could not store workflow progress: {e}")
+
+    def _print_progress_bar(self):
+        """Print a visual progress bar to console."""
+        completed = {r["phase"] for r in self.phases if r["status"] == "completed"}
+        current = self.current_phase
+
+        bar = "["
+        for phase in WORKFLOW_PHASES:
+            if phase in completed:
+                bar += "█"
+            elif phase == current:
+                bar += "▓"
+            else:
+                bar += "░"
+        bar += "]"
+
+        pct = (len(completed) / len(WORKFLOW_PHASES)) * 100
+        print(f"\r{bar} {pct:.0f}% - {current or 'Starting...'}", end="", flush=True)
+        if current == "COMPLETE" or pct == 100:
+            print()  # Newline when done
+
+    def get_summary(self) -> Dict[str, Any]:
+        """Get workflow summary."""
+        completed = [p for p in self.phases if p["status"] == "completed"]
+        errors = [p for p in self.phases if p["status"] == "error"]
+        total_duration = sum(p.get("duration_ms", 0) or 0 for p in self.phases)
+
+        return {
+            "cycle_id": self.cycle_id,
+            "agent_id": self.agent_id,
+            "started_at": self.started_at.isoformat(),
+            "current_phase": self.current_phase,
+            "phases_completed": len(completed),
+            "phases_total": len(self.phases),
+            "errors": len(errors),
+            "total_duration_ms": total_duration,
+            "phase_details": self.phases
+        }
 
 
 # =============================================================================
@@ -218,6 +401,135 @@ class ConsciousnessClient:
 
 
 # =============================================================================
+# SYSTEM PROMPT - Claude's Trading Instructions
+# =============================================================================
+
+SYSTEM_PROMPT = """You are an autonomous AI trading agent for the Hong Kong Stock Exchange (HKEX).
+
+## Your Role
+You make trading decisions during HKEX market hours using the tools available to you.
+Every decision you make should be documented with clear reasoning for the audit trail.
+
+## PAPER TRADING MODE - LEARNING FIRST
+**This is paper trading. We are here to LEARN, not to be perfect.**
+
+Philosophy:
+- PREFER action over inaction when setups look reasonable
+- A trade that loses teaches us something
+- A missed trade teaches us nothing
+- We learn by doing, not by waiting for perfection
+- Document everything so we can analyze later
+
+The goal is to generate LEARNING DATA, not to preserve fake capital.
+
+## Market Hours (Hong Kong Time)
+- Morning session: 09:30 - 12:00
+- Lunch break: 12:00 - 13:00 (NO TRADING)
+- Afternoon session: 13:00 - 16:00
+
+## Trading Strategy
+You are a momentum day trader. Your edge is:
+1. Finding stocks with volume spikes (>1.5x average)
+2. Confirming with bullish chart patterns OR positive catalysts
+3. Using risk management (2:1 reward:risk minimum)
+
+## Decision Making Process
+For each trading cycle:
+1. Check portfolio status first (get_portfolio)
+2. Scan for candidates (scan_market)
+3. For promising candidates:
+   a. Get quote for current price
+   b. Get technicals to assess setup
+   c. Detect patterns for entry/exit levels
+   d. Check news for catalysts
+   e. EVALUATE using tiered criteria below
+   f. If Tier 1 or Tier 2, check risk then trade
+4. Monitor existing positions for exits
+5. Log all decisions with reasoning
+
+## Critical Rules (MUST FOLLOW)
+1. **ALWAYS** call check_risk before execute_trade
+2. **NEVER** trade if check_risk returns approved=false
+3. **ALWAYS** provide reason for every trade and close
+4. **ALWAYS** call log_decision to record your reasoning
+5. **IMMEDIATELY** call close_all if daily loss exceeds 5% (paper mode)
+6. **PREFER** limit orders over market orders
+7. **CLOSE** positions before lunch break (12:00) unless strong conviction
+8. **MAXIMUM** 5 positions at any time
+9. **MAXIMUM** 25% of portfolio per position (paper mode allows larger)
+
+## TIERED ENTRY CRITERIA (Use ANY tier that matches)
+
+### Tier 1 - Strong Setup (TRADE FULL SIZE)
+Requirements (ALL of these):
+- Volume ratio > 2.0x average
+- RSI between 30-70
+- Clear chart pattern with defined entry
+- Positive news catalyst (sentiment > 0.2)
+- Risk/reward ratio >= 2:1
+
+### Tier 2 - Good Setup (TRADE FULL SIZE)
+Requirements:
+- Volume ratio > 1.5x average
+- RSI between 30-75
+- EITHER: Clear pattern OR Positive catalyst (don't need both!)
+- Risk/reward ratio >= 1.5:1
+- Price within 1% of breakout level counts as "at breakout"
+
+### Tier 3 - Learning Trade (TRADE HALF SIZE)
+Requirements:
+- Volume ratio > 1.3x average
+- RSI between 25-80 (wider range)
+- Strong momentum (price up > 3% today)
+- At least one of: pattern forming, news mention, sector strength
+- Risk/reward ratio >= 1.5:1
+- Log as "learning trade" for analysis
+
+### When to PASS
+Only skip a trade if:
+- RSI > 80 (severely overbought) or < 20 (oversold crash)
+- Volume is BELOW average (no interest)
+- check_risk returns false
+- Already at max positions (5)
+- No clear stop loss level identifiable
+
+## Pattern Detection - Relaxed Rules
+- "Within 1% of breakout" = close enough, take it
+- "Approaching resistance" = valid setup if volume confirms
+- Don't require EXACT breakout - momentum traders anticipate
+
+## News Catalyst - Relaxed Rules
+- Sentiment > 0.0 (any positive) = acceptable catalyst for Tier 2/3
+- Sector news counts (e.g., "tech sector rally" benefits tech stocks)
+- No news is NOT a blocker if pattern is strong
+
+## Exit Rules
+- Take profit at pattern target
+- Stop loss if price hits stop level
+- Time stop: close if flat after 60 minutes
+- Trail stop to breakeven after +2% gain
+- CLOSE before lunch break unless conviction is high
+
+## Response Format
+Think step by step. After each tool call, analyze the result and decide
+whether to continue gathering information, take action, or conclude.
+
+When evaluating a candidate, explicitly state:
+- Which TIER does this setup match?
+- What's the specific entry trigger?
+- What's the stop loss level?
+- What's the profit target?
+
+When you've completed all actions for this cycle, provide a summary of:
+- Positions entered/exited (with tier classification)
+- Key decisions made and WHY
+- Candidates that almost qualified (for learning)
+- Current portfolio status
+- Any patterns noticed across candidates
+"""
+
+
+# =============================================================================
 # UNIFIED AGENT
 # =============================================================================
 
@@ -244,7 +556,17 @@ class UnifiedAgent:
         
         self.agent_id = config['agent']['id']
         self.consciousness: Optional[ConsciousnessClient] = None
-        
+
+        # Claude API configuration
+        claude_config = config.get('claude', {})
+        self.model = claude_config.get('model', 'claude-sonnet-4-20250514')
+        self.max_tokens = claude_config.get('max_tokens', 4096)
+        self.max_iterations = claude_config.get('max_iterations', 35)
+
+        # Workflow tracking (initialized per-cycle)
+        self.tracker: Optional[WorkflowTracker] = None
+        self.cycle_id: Optional[str] = None
+
         # Build signal thresholds from config
         signal_config = config.get('signals', {})
         self.thresholds = SignalThresholds(
@@ -255,8 +577,8 @@ class UnifiedAgent:
             rsi_overbought_strong=signal_config.get('rsi_overbought_strong', 85),
             rsi_overbought_moderate=signal_config.get('rsi_overbought_moderate', 75),
         )
-        
-        logger.info(f"UnifiedAgent initialized: {self.agent_id}")
+
+        logger.info(f"UnifiedAgent initialized: {self.agent_id}, model={self.model}")
     
     async def initialize(self):
         """Initialize agent connections."""
@@ -275,12 +597,22 @@ class UnifiedAgent:
     
     async def shutdown(self):
         """Shutdown agent connections."""
+        # Disconnect workflow tracker if active
+        if self.tracker:
+            await self.tracker.disconnect()
+
         if self.broker:
             self.broker.disconnect()
-        
+
         if self.consciousness:
             await self.consciousness.sleep()
-        
+
+        # Stop alert sender
+        try:
+            get_alert_sender().stop()
+        except Exception:
+            pass
+
         await self.db.close()
         logger.info("Agent shutdown complete")
     
@@ -317,64 +649,83 @@ class UnifiedAgent:
         return result
     
     async def run_trade_cycle(self):
-        """Run full trading cycle: scan -> analyze -> execute."""
+        """Run full trading cycle with Claude AI loop."""
+        # Generate cycle ID
+        self.cycle_id = f"hk_{datetime.now(HK_TZ).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+        # Initialize workflow tracker
+        self.tracker = WorkflowTracker(self.cycle_id, self.agent_id)
+        await self.tracker.connect()
+
         logger.info("=" * 60)
         logger.info("RUNNING TRADE CYCLE")
+        logger.info(f"Cycle ID: {self.cycle_id}")
         logger.info(f"Time: {datetime.now(HK_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}")
         logger.info("=" * 60)
-        
-        # Wake up
+
+        # === PHASE 1: INIT ===
+        await self.tracker.start_phase("INIT", "Agent initializing")
+
+        # Wake up consciousness
         if self.consciousness:
             await self.consciousness.wake_up()
-        
+
         # Check market hours
         if not self._is_market_open():
+            await self.tracker.complete_phase("INIT", status="skipped", reason="market_closed")
+            await self.tracker.disconnect()
             logger.info("Market closed, skipping trade cycle")
             return {'status': 'skipped', 'reason': 'market_closed'}
-        
-        # Get current portfolio
-        portfolio = await self._get_portfolio()
-        open_positions = portfolio.get('positions', [])
-        
-        logger.info(f"Current positions: {len(open_positions)}")
-        
-        # Check position limit
-        max_positions = self.config['trading']['max_positions']
-        if len(open_positions) >= max_positions:
-            logger.info(f"At max positions ({max_positions}), skipping scan")
-            return {'status': 'skipped', 'reason': 'max_positions'}
-        
-        # Scan for opportunities
-        candidates = await self._scan_market()
-        
-        if not candidates:
-            logger.info("No candidates found")
-            return {'status': 'complete', 'candidates': 0, 'trades': 0}
-        
-        logger.info(f"Found {len(candidates)} candidates")
-        
-        # Analyze and potentially execute
-        trades_executed = 0
-        for candidate in candidates[:3]:  # Limit to top 3
-            if len(open_positions) + trades_executed >= max_positions:
-                break
-            
-            decision = await self._analyze_candidate(candidate)
-            
-            if decision.get('action') == 'BUY':
-                result = await self._execute_entry(candidate, decision)
-                if result.get('success'):
-                    trades_executed += 1
-        
-        # Record observation
+
+        # Start cycle in database (for audit trail and log_decision FK)
+        try:
+            db = get_database()
+            db.start_agent_cycle(self.cycle_id, "HKEX")
+        except Exception as e:
+            logger.warning(f"Could not start cycle in DB: {e}")
+
+        # Create tool executor
+        alert_callback = create_alert_callback()
+        executor = create_tool_executor(
+            cycle_id=self.cycle_id,
+            alert_callback=alert_callback,
+            agent=self,
+        )
+
+        await self.tracker.complete_phase("INIT", model=self.model)
+
+        # === RUN CLAUDE LOOP ===
+        result = await self._run_claude_loop(executor)
+
+        # === FINAL PHASES ===
+        if not result.get('error'):
+            await self.tracker.start_phase("COMPLETE", "Cycle finished")
+            await self.tracker.complete_phase("COMPLETE",
+                trades_executed=result.get('trades_executed', 0),
+                duration_sec=int((datetime.now(HK_TZ) - self.tracker.started_at).total_seconds())
+            )
+
+        # Record consciousness observation
         if self.consciousness:
             await self.consciousness.observe(
                 category='trading',
-                content=f"Trade cycle complete: {len(candidates)} candidates, {trades_executed} trades",
-                metadata={'candidates': len(candidates), 'trades': trades_executed}
+                content=f"Trade cycle {self.cycle_id}: {result.get('trades_executed', 0)} trades",
+                metadata={'cycle_id': self.cycle_id, **result}
             )
-        
-        return {'status': 'complete', 'candidates': len(candidates), 'trades': trades_executed}
+
+        # Print summary
+        print("\n" + "=" * 60)
+        print("WORKFLOW SUMMARY")
+        print("=" * 60)
+        wf_summary = self.tracker.get_summary()
+        print(f"Phases completed: {wf_summary['phases_completed']}/{len(WORKFLOW_PHASES)}")
+        print(f"Total duration: {wf_summary['total_duration_ms']}ms")
+        print(f"Errors: {wf_summary['errors']}")
+
+        # Disconnect tracker
+        await self.tracker.disconnect()
+
+        return result
     
     async def run_close_cycle(self):
         """Review and optionally close positions."""
@@ -499,91 +850,198 @@ class UnifiedAgent:
         except Exception as e:
             logger.error(f"Error getting portfolio: {e}")
             return {'positions': []}
-    
-    async def _scan_market(self) -> List[Dict[str, Any]]:
-        """Scan market for trading candidates."""
-        # Implementation depends on your scanner logic
-        logger.info("Scanning market...")
-        
-        # Placeholder - implement your scanning logic
-        return []
-    
-    async def _analyze_candidate(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze a candidate for entry."""
-        # Implementation depends on your analysis logic
-        logger.info(f"Analyzing {candidate.get('symbol')}...")
-        
-        # Placeholder
-        return {'action': 'SKIP', 'reason': 'Not implemented'}
-    
-    async def _execute_entry(
-        self,
-        candidate: Dict[str, Any],
-        decision: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Execute entry trade and start position monitor."""
-        symbol = candidate['symbol']
-        logger.info(f"Executing entry for {symbol}")
-        
+
+    # =========================================================================
+    # CLAUDE API LOOP METHODS
+    # =========================================================================
+
+    async def _run_claude_loop(self, executor) -> Dict[str, Any]:
+        """Execute Claude API tool use loop."""
+        context = self._build_context()
+        messages = [{"role": "user", "content": context}]
+        tools_called = []
+        final_response = ""
+        error = None
+
+        # Phase tracking
+        current_phase = "PORTFOLIO"
+        phase_started = False
+        candidates_count = 0
+        analyzed_count = 0
+        trades_executed = 0
+
         try:
-            # Execute trade via broker
-            result = self.broker.execute_trade(
-                symbol=symbol,
-                side='buy',
-                quantity=decision.get('quantity', 100),
-                order_type='limit',
-                limit_price=decision.get('entry_price'),
-                stop_loss=decision.get('stop_loss'),
-                take_profit=decision.get('take_profit'),
-                reason=decision.get('reason', 'AI entry decision')
-            )
-            
-            if result and result.order_id and result.status not in ('FAILED', 'NO_POSITION'):
-                # Record to database
-                async with self.db.trading_pool.acquire() as conn:
-                    position_id = await conn.fetchval("""
-                        INSERT INTO positions (
-                            symbol, side, quantity, entry_price, entry_time,
-                            stop_loss, take_profit, entry_reason, status
-                        ) VALUES ($1, 'long', $2, $3, NOW(), $4, $5, $6, 'open')
-                        RETURNING position_id
-                    """,
-                        symbol,
-                        result.quantity,
-                        result.fill_price or decision.get('entry_price'),
-                        decision.get('stop_loss'),
-                        decision.get('take_profit'),
-                        decision.get('reason')
-                    )
-                
-                # Position monitoring now handled by position_monitor_service.py (systemd)
-                if POSITION_MONITOR_AVAILABLE and start_position_monitor:
-                    asyncio.create_task(
-                        start_position_monitor(
-                            broker=self.broker,
-                            market_data=self.market_data,
-                            anthropic_client=self.anthropic,
-                            position_id=position_id,
-                            symbol=symbol,
-                            entry_price=result.fill_price or decision.get('entry_price'),
-                            quantity=result.quantity,
-                            stop_price=decision.get('stop_loss'),
-                            target_price=decision.get('take_profit'),
-                            entry_reason=decision.get('reason', ''),
-                            thresholds=self.thresholds
-                        )
-                    )
-                    logger.info(f"Entry executed and inline monitor started for {symbol}")
-                else:
-                    logger.info(f"Entry executed for {symbol} - monitoring via systemd service")
-                return {'success': True, 'position_id': position_id}
-            else:
-                return {'success': False, 'error': 'Order failed'}
-                
+            for iteration in range(self.max_iterations):
+                logger.info(f"Iteration {iteration + 1}/{self.max_iterations}")
+
+                # Call Claude
+                response = self.anthropic.messages.create(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    system=SYSTEM_PROMPT,
+                    tools=TOOLS,
+                    messages=messages,
+                )
+
+                # Add assistant response to messages
+                assistant_message = {"role": "assistant", "content": response.content}
+                messages.append(assistant_message)
+
+                # Check for tool use blocks
+                tool_use_blocks = [
+                    block for block in response.content
+                    if block.type == "tool_use"
+                ]
+
+                if not tool_use_blocks:
+                    # No more tools - extract final text
+                    for block in response.content:
+                        if hasattr(block, "text"):
+                            final_response = block.text
+                    break
+
+                # Execute tool calls
+                tool_results = []
+                for tool_block in tool_use_blocks:
+                    tool_name = tool_block.name
+                    tool_input = tool_block.input
+
+                    # Update workflow phase based on tool
+                    new_phase = self._tool_to_phase(tool_name, current_phase)
+                    if new_phase != current_phase:
+                        if phase_started:
+                            await self._complete_current_phase(
+                                current_phase, candidates_count, analyzed_count, trades_executed
+                            )
+                        current_phase = new_phase
+                        await self.tracker.start_phase(new_phase, f"Running {tool_name}")
+                        phase_started = True
+
+                    logger.info(f"Tool call: {tool_name}")
+                    tools_called.append({"tool": tool_name, "input": tool_input})
+
+                    # Execute tool
+                    result = executor.execute(tool_name, tool_input)
+
+                    # Update counts for phase metadata
+                    if tool_name == "scan_market" and isinstance(result, dict):
+                        candidates_count = len(result.get("candidates", []))
+                    elif tool_name in ["get_quote", "get_technicals", "detect_patterns", "get_news"]:
+                        analyzed_count += 1
+                    elif tool_name == "execute_trade" and isinstance(result, dict):
+                        if result.get("status") in ["filled", "success", "FILLED"]:
+                            trades_executed += 1
+
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_block.id,
+                        "content": json.dumps(result),
+                    })
+
+                # Add tool results
+                messages.append({"role": "user", "content": tool_results})
+
+                if response.stop_reason == "end_turn":
+                    break
+
+            # Complete final phase
+            if phase_started:
+                await self._complete_current_phase(
+                    current_phase, candidates_count, analyzed_count, trades_executed
+                )
+
+            # LOG phase
+            await self.tracker.start_phase("LOG", "Recording decisions")
+            await self.tracker.complete_phase("LOG", tools_called=len(tools_called))
+
         except Exception as e:
-            logger.error(f"Entry execution error: {e}")
-            return {'success': False, 'error': str(e)}
-    
+            logger.error(f"Claude loop error: {e}", exc_info=True)
+            error = str(e)
+            await self.tracker.error_phase(current_phase, error)
+
+        return {
+            'cycle_id': self.cycle_id,
+            'status': 'error' if error else 'completed',
+            'trades_executed': trades_executed,
+            'tools_called': len(tools_called),
+            'candidates_found': candidates_count,
+            'analyzed': analyzed_count,
+            'final_response': final_response[:500] if final_response else None,
+            'error': error,
+        }
+
+    def _build_context(self, mode: str = "trade") -> str:
+        """Build initial context for Claude."""
+        now = datetime.now(HK_TZ)
+
+        context = f"""## Trading Cycle Context
+
+**Date/Time**: {now.strftime('%Y-%m-%d %H:%M:%S')} HKT ({now.strftime('%A')})
+**Cycle ID**: {self.cycle_id}
+**Mode**: Paper Trading
+
+## Your Task
+
+Execute your trading strategy for this cycle:
+1. Check current portfolio status
+2. Scan for new opportunities
+3. Analyze top candidates
+4. Execute trades if criteria met
+5. Monitor and manage existing positions
+6. Log all decisions
+
+Begin by checking the portfolio status, then scan the market for candidates.
+Make sure to log your decisions and reasoning throughout.
+"""
+
+        if mode == "close":
+            context += """
+**SPECIAL MODE: CLOSE CYCLE**
+Focus on reviewing existing positions for potential exits.
+Check for positions that should be closed based on:
+- P&L thresholds
+- Time-based rules (lunch break, end of day)
+- Pattern failures
+"""
+
+        return context
+
+    def _tool_to_phase(self, tool_name: str, current_phase: str) -> str:
+        """Map tool name to workflow phase."""
+        phase_map = {
+            "get_portfolio": "PORTFOLIO",
+            "scan_market": "SCAN",
+            "get_quote": "ANALYZE",
+            "get_technicals": "ANALYZE",
+            "detect_patterns": "ANALYZE",
+            "get_news": "ANALYZE",
+            "check_risk": "VALIDATE",
+            "execute_trade": "EXECUTE",
+            "close_position": "EXECUTE",
+            "close_all": "EXECUTE",
+            "send_alert": "LOG",
+            "log_decision": "LOG",
+        }
+
+        new_phase = phase_map.get(tool_name, current_phase)
+
+        # Don't go backwards in phases
+        current_idx = WORKFLOW_PHASES.index(current_phase) if current_phase in WORKFLOW_PHASES else 0
+        new_idx = WORKFLOW_PHASES.index(new_phase) if new_phase in WORKFLOW_PHASES else current_idx
+
+        return new_phase if new_idx >= current_idx else current_phase
+
+    async def _complete_current_phase(self, phase: str, candidates: int, analyzed: int, trades: int):
+        """Complete current workflow phase with appropriate metadata."""
+        if phase == "SCAN":
+            await self.tracker.complete_phase(phase, candidates=candidates)
+        elif phase == "ANALYZE":
+            await self.tracker.complete_phase(phase, analyzed=analyzed)
+        elif phase == "EXECUTE":
+            await self.tracker.complete_phase(phase, trades=trades)
+        else:
+            await self.tracker.complete_phase(phase)
+
     async def _close_position(
         self,
         position: Dict[str, Any],
@@ -646,15 +1104,18 @@ async def main(mode: str, config_path: Optional[str] = None):
     
     # Create components
     db = Database(trading_url, research_url)
-    
-    # Create broker (if available)
+
+    # Initialize the synchronous database singleton (for tool_executor)
+    init_database()
+
+    # Create broker (if available) - use init_moomoo_client for singleton
     broker = None
     market_data = None
-    if MoomooClient:
+    if init_moomoo_client:
         try:
-            broker = MoomooClient(paper_trading=True)
-        except:
-            logger.warning("Could not initialize broker")
+            broker = init_moomoo_client(paper_trading=True)
+        except Exception as e:
+            logger.warning(f"Could not initialize broker: {e}")
     
     # Create Anthropic client
     anthropic_client = anthropic.Anthropic()
@@ -695,7 +1156,9 @@ async def main(mode: str, config_path: Optional[str] = None):
 
 def cli():
     """Command line interface."""
-    parser = argparse.ArgumentParser(description='Unified Trading Agent')
+    parser = argparse.ArgumentParser(
+        description='Unified Trading Agent for HKEX (v3.0.0 with Claude AI loop)'
+    )
     parser.add_argument(
         '--mode',
         choices=['startup', 'scan', 'trade', 'close', 'heartbeat'],
@@ -708,9 +1171,30 @@ def cli():
         default=None,
         help='Path to config file'
     )
-    
+    parser.add_argument(
+        '--live',
+        action='store_true',
+        help='Use live trading (default is paper)'
+    )
+    parser.add_argument(
+        '--force',
+        action='store_true',
+        help='Run even if market is closed'
+    )
+
     args = parser.parse_args()
-    
+
+    # Set force flag in environment for market check
+    if args.force:
+        os.environ['FORCE_MARKET_OPEN'] = '1'
+
+    # Create logs directory
+    os.makedirs("logs", exist_ok=True)
+
+    logger.info("=" * 60)
+    logger.info("Catalyst Trading Agent - HKEX (v3.0.0 with Claude AI loop)")
+    logger.info("=" * 60)
+
     asyncio.run(main(args.mode, args.config))
 
 

@@ -2,13 +2,21 @@
 
 **Name of Application**: Catalyst Trading System
 **Name of file**: CLAUDE.md
-**Version**: 3.4.0
-**Last Updated**: 2026-01-16
+**Version**: 3.6.0
+**Last Updated**: 2026-01-17
 **Purpose**: Complete operational guidelines for Claude Code on HKEX production system
 
 ---
 
 ## REVISION HISTORY
+
+**v3.6.0 (2026-01-17)** - MERGED AGENT.PY INTO UNIFIED_AGENT
+- Merged deleted agent.py functionality into unified_agent.py v3.0.0
+- Added WorkflowTracker class for 10-phase progress tracking
+- Added SYSTEM_PROMPT with tiered entry criteria (Tier 1/2/3)
+- Added Claude API tool-use loop (replaces stub implementations)
+- Added --force and --live CLI flags
+- Progress bar displays during execution
 
 **v3.5.0 (2026-01-16)** - CLEANUP & CONSOLIDATION
 - Removed agent.py (replaced by unified_agent.py)
@@ -82,7 +90,7 @@
 
 | File | Version | Last Updated | Purpose |
 |------|---------|--------------|---------|
-| `unified_agent.py` | 2.1.0 | 2026-01-16 | Main agent (cron: scan/trade/close modes) |
+| `unified_agent.py` | 3.0.0 | 2026-01-17 | Main agent with Claude AI loop + WorkflowTracker |
 | `tool_executor.py` | 2.6.0 | 2026-01-16 | Tool routing + order status fix |
 | `brokers/moomoo.py` | 1.2.1 | 2026-01-06 | Moomoo client (portfolio fixes) |
 | `data/patterns.py` | 1.1.0 | 2026-01-06 | Relaxed pattern detection |
