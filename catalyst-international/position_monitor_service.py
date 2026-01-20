@@ -2,11 +2,16 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: position_monitor_service.py
-Version: 1.0.0
-Last Updated: 2026-01-16
+Version: 1.0.1
+Last Updated: 2026-01-20
 Purpose: Persistent systemd service for continuous HKEX position monitoring
 
 REVISION HISTORY:
+v1.0.1 (2026-01-20) - Bug fixes
+  - Fixed price key: use 'last_price' instead of 'price' from quote
+  - Fixed execute_trade method name (was place_order)
+  - Fixed OrderResult to dict conversion for compatibility
+
 v1.0.0 (2026-01-16) - Initial implementation
   - Persistent daemon for position monitoring
   - Checks ALL open positions every 5 minutes
@@ -342,12 +347,21 @@ class BrokerInterface:
             return {'status': 'filled', 'fill_price': 0, 'dry_run': True}
             
         try:
-            return self.client.place_order(
+            result = self.client.execute_trade(
                 symbol=symbol,
-                side='SELL',
+                side='sell',
                 quantity=quantity,
-                order_type=order_type
+                order_type=order_type.lower(),
+                reason="Position monitor exit"
             )
+            # Convert OrderResult dataclass to dict for compatibility
+            return {
+                'status': result.status,
+                'order_id': result.order_id,
+                'fill_price': result.filled_price,
+                'filled_quantity': result.filled_quantity,
+                'message': result.message
+            }
         except Exception as e:
             logger.error(f"Order error for {symbol}: {e}")
             return {'status': 'error', 'message': str(e)}
@@ -772,7 +786,7 @@ Then a brief reason (one sentence) on the second line.
             logger.warning(f"No quote for {symbol}, skipping")
             return None
             
-        current_price = float(quote.get('price', 0))
+        current_price = float(quote.get('last_price', 0))
         if current_price <= 0:
             logger.warning(f"Invalid price for {symbol}: {current_price}")
             return None
@@ -843,7 +857,7 @@ Then a brief reason (one sentence) on the second line.
             fill_price = float(result.get('fill_price', 0))
             if fill_price <= 0:
                 quote = self.broker.get_quote(symbol)
-                fill_price = float(quote.get('price', entry_price)) if quote else entry_price
+                fill_price = float(quote.get('last_price', entry_price)) if quote else entry_price
                 
             # Calculate P&L
             pnl = (fill_price - entry_price) * quantity

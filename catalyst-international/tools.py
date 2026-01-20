@@ -180,7 +180,9 @@ Returns:
 - daily_pnl: Today's realized + unrealized P&L
 - daily_pnl_pct: Today's P&L as percentage
 - position_count: Number of open positions
+- max_positions: Maximum allowed positions from config
 
+Use position_count and max_positions to determine if you can open more positions.
 Use this to check available capital and monitor positions.""",
         "input_schema": {
             "type": "object",

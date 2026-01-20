@@ -1,11 +1,21 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: tool_executor.py
-Version: 2.6.0
-Last Updated: 2026-01-16
+Version: 2.8.0
+Last Updated: 2026-01-20
 Purpose: Routes Claude's tool calls to actual implementations
 
 REVISION HISTORY:
+v2.8.0 (2026-01-20) - Enforce max_position_value_hkd limit
+- Added position value validation in _execute_trade()
+- Rejects trades exceeding max_position_value_hkd (default 10,000)
+- Returns helpful error with max allowed quantity for the price
+
+v2.7.0 (2026-01-20) - Add max_positions to portfolio response
+- Added config loading in __init__
+- get_portfolio now returns max_positions from config
+- Agent can now see available position slots
+
 v2.6.0 (2026-01-16) - Fix order status handling
 - Fixed: Only record position when broker confirms FILLED (not just SUBMITTED)
 - Separate filled_statuses, partial_filled_statuses, submitted_statuses
@@ -60,6 +70,8 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import yaml
+
 from brokers.moomoo import get_moomoo_client
 from data.database import get_database
 from data.market import get_market_data
@@ -100,6 +112,9 @@ class ToolExecutor:
         self.tools_called: list[dict] = []
         self.trades_executed = 0
 
+        # Load config
+        self.config = self._load_config()
+
         # Initialize services
         self.broker = get_moomoo_client()
         self.db = get_database()
@@ -107,6 +122,16 @@ class ToolExecutor:
         self.patterns = get_pattern_detector(self.market)
         self.news = get_news_client()
         self.safety = get_safety_validator()
+
+    def _load_config(self) -> dict:
+        """Load trading config from file."""
+        config_path = "config/intl_claude_config.yaml"
+        try:
+            with open(config_path) as f:
+                return yaml.safe_load(f)
+        except Exception as e:
+            logger.warning(f"Failed to load config from {config_path}: {e}")
+            return {}
 
     def execute(self, tool_name: str, tool_input: dict) -> dict:
         """Execute a tool call.
@@ -304,6 +329,10 @@ class ToolExecutor:
         if hasattr(portfolio, '__dict__'):
             portfolio = vars(portfolio)
 
+        # Get max_positions from config (default 5 for safety)
+        trading_config = self.config.get('trading', {}) if self.config else {}
+        max_positions = trading_config.get('max_positions', 5)
+
         return {
             "cash": portfolio.get("cash", 0),
             "equity": portfolio.get("equity") or portfolio.get("total_assets", 0),
@@ -312,6 +341,7 @@ class ToolExecutor:
             "daily_pnl": portfolio.get("daily_pnl", 0),
             "daily_pnl_pct": portfolio.get("daily_pnl_pct", 0),
             "position_count": portfolio.get("position_count", 0),
+            "max_positions": max_positions,
             "timestamp": datetime.now(HK_TZ).isoformat(),
         }
 
@@ -331,6 +361,36 @@ class ToolExecutor:
         reason = inputs["reason"]
 
         logger.info(f"Executing trade: {side} {quantity} {symbol}")
+
+        # ENFORCE POSITION VALUE LIMIT
+        trading_config = self.config.get('trading', {}) if self.config else {}
+        max_position_value = trading_config.get('max_position_value_hkd', 10000)
+
+        # Get current price to calculate position value
+        try:
+            quote = self.broker.get_quote(symbol)
+            current_price = quote.get('last_price') or quote.get('last') or limit_price or 0
+        except Exception:
+            current_price = limit_price or 0
+
+        if current_price > 0:
+            position_value = quantity * current_price
+            if position_value > max_position_value:
+                max_qty = int(max_position_value / current_price)
+                # Round down to lot size (typically 100 for HKEX)
+                lot_size = 100
+                max_qty = (max_qty // lot_size) * lot_size
+                logger.warning(
+                    f"Position value HKD {position_value:,.0f} exceeds limit HKD {max_position_value:,}. "
+                    f"Rejecting trade. Max allowed quantity at {current_price:.2f} is {max_qty} shares."
+                )
+                return {
+                    "success": False,
+                    "status": "REJECTED",
+                    "order_id": None,
+                    "message": f"Position value HKD {position_value:,.0f} exceeds max limit HKD {max_position_value:,}. "
+                               f"Use quantity <= {max_qty} for this price.",
+                }
 
         # Execute via broker
         result = self.broker.execute_trade(

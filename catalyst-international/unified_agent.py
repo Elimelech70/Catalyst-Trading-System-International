@@ -125,8 +125,8 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     return {
         'agent': {'id': os.getenv('AGENT_ID', 'unified_agent')},
         'trading': {
-            'max_positions': 5,
-            'max_position_value_hkd': 40000,
+            'max_positions': 15,
+            'max_position_value_hkd': 10000,
             'daily_loss_limit_hkd': 16000,
         },
         'ai': {
@@ -455,28 +455,31 @@ For each trading cycle:
 5. **IMMEDIATELY** call close_all if daily loss exceeds 5% (paper mode)
 6. **PREFER** limit orders over market orders
 7. **CLOSE** positions before lunch break (12:00) unless strong conviction
-8. **MAXIMUM** 5 positions at any time
-9. **MAXIMUM** 25% of portfolio per position (paper mode allows larger)
+8. **CHECK** max_positions from get_portfolio (currently configured for 15)
+9. **MAXIMUM** HKD 10,000 per position (STRICTLY ENFORCED - trades larger than this will be rejected)
+10. **POSITION SIZING**: Calculate quantity = floor(10000 / price). Round down to nearest lot size.
 
 ## TIERED ENTRY CRITERIA (Use ANY tier that matches)
 
-### Tier 1 - Strong Setup (TRADE FULL SIZE)
+### Tier 1 - Strong Setup (FULL SIZE = HKD 10,000)
 Requirements (ALL of these):
 - Volume ratio > 2.0x average
 - RSI between 30-70
 - Clear chart pattern with defined entry
 - Positive news catalyst (sentiment > 0.2)
 - Risk/reward ratio >= 2:1
+- Position size: HKD 10,000 max
 
-### Tier 2 - Good Setup (TRADE FULL SIZE)
+### Tier 2 - Good Setup (FULL SIZE = HKD 10,000)
 Requirements:
 - Volume ratio > 1.5x average
 - RSI between 30-75
 - EITHER: Clear pattern OR Positive catalyst (don't need both!)
 - Risk/reward ratio >= 1.5:1
 - Price within 1% of breakout level counts as "at breakout"
+- Position size: HKD 10,000 max
 
-### Tier 3 - Learning Trade (TRADE HALF SIZE)
+### Tier 3 - Learning Trade (HALF SIZE = HKD 5,000)
 Requirements:
 - Volume ratio > 1.3x average
 - RSI between 25-80 (wider range)
@@ -484,13 +487,14 @@ Requirements:
 - At least one of: pattern forming, news mention, sector strength
 - Risk/reward ratio >= 1.5:1
 - Log as "learning trade" for analysis
+- Position size: HKD 5,000 max (half size for learning)
 
 ### When to PASS
 Only skip a trade if:
 - RSI > 80 (severely overbought) or < 20 (oversold crash)
 - Volume is BELOW average (no interest)
 - check_risk returns false
-- Already at max positions (5)
+- Already at max_positions (check get_portfolio result)
 - No clear stop loss level identifiable
 
 ## Pattern Detection - Relaxed Rules

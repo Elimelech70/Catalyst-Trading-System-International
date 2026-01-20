@@ -2,13 +2,21 @@
 
 **Name of Application**: Catalyst Trading System
 **Name of file**: CLAUDE.md
-**Version**: 3.6.0
-**Last Updated**: 2026-01-17
+**Version**: 3.7.0
+**Last Updated**: 2026-01-20
 **Purpose**: Complete operational guidelines for Claude Code on HKEX production system
 
 ---
 
 ## REVISION HISTORY
+
+**v3.7.0 (2026-01-20)** - POSITION VALUE LIMITS & FIXES
+- Added HKD 10,000 max position value enforcement in tool_executor.py v2.8.0
+- Updated SYSTEM_PROMPT: changed "25% of portfolio" to "HKD 10,000 max per position"
+- Updated tier descriptions with explicit HKD limits (Tier 1/2: 10K, Tier 3: 5K)
+- Added max_positions to get_portfolio response (tool_executor.py v2.7.0)
+- Fixed position_monitor_service.py v1.0.1: price key bug, execute_trade method
+- Trades exceeding limit are rejected with helpful error message
 
 **v3.6.0 (2026-01-17)** - MERGED AGENT.PY INTO UNIFIED_AGENT
 - Merged deleted agent.py functionality into unified_agent.py v3.0.0
@@ -90,14 +98,15 @@
 
 | File | Version | Last Updated | Purpose |
 |------|---------|--------------|---------|
-| `unified_agent.py` | 3.0.0 | 2026-01-17 | Main agent with Claude AI loop + WorkflowTracker |
-| `tool_executor.py` | 2.6.0 | 2026-01-16 | Tool routing + order status fix |
+| `unified_agent.py` | 3.0.0 | 2026-01-20 | Main agent with Claude AI loop + HKD limits in SYSTEM_PROMPT |
+| `tool_executor.py` | 2.8.0 | 2026-01-20 | Tool routing + position value limit enforcement |
 | `brokers/moomoo.py` | 1.2.1 | 2026-01-06 | Moomoo client (portfolio fixes) |
 | `data/patterns.py` | 1.1.0 | 2026-01-06 | Relaxed pattern detection |
 | `data/market.py` | 2.3.0 | 2026-01-16 | Fixed volume_ratio calculation |
 | `data/news.py` | 1.0.0 | 2025-12-06 | News and sentiment |
-| `position_monitor_service.py` | 1.0.0 | 2026-01-16 | Systemd service for position monitoring |
-| `config/settings.yaml` | - | 2026-01-16 | max_iterations: 35 |
+| `position_monitor_service.py` | 1.0.1 | 2026-01-20 | Systemd service - fixed price key + execute_trade |
+| `tools.py` | - | 2026-01-20 | Tool schemas - added max_positions to get_portfolio |
+| `config/settings.yaml` | - | 2026-01-16 | max_iterations: 35, max_position_value_hkd: 10000 |
 
 ### Pattern Types (v1.1.0)
 
@@ -111,11 +120,16 @@
 
 ### Entry Criteria (Tiered System)
 
-**Tier 1 - Strong (Full Size)**: Volume >2x, RSI 30-70, Pattern AND Catalyst, R:R ≥2:1
+**Position Size Limits (ENFORCED):**
+- Max position value: HKD 10,000 (rejected if exceeded)
+- Tier 1/2 trades: HKD 10,000 max
+- Tier 3 trades: HKD 5,000 max (half size for learning)
 
-**Tier 2 - Good (Full Size)**: Volume >1.5x, RSI 30-75, Pattern OR Catalyst, R:R ≥1.5:1
+**Tier 1 - Strong (HKD 10,000)**: Volume >2x, RSI 30-70, Pattern AND Catalyst, R:R ≥2:1
 
-**Tier 3 - Learning (Half Size)**: Volume >1.3x, RSI 25-80, Momentum >3%, Any signal
+**Tier 2 - Good (HKD 10,000)**: Volume >1.5x, RSI 30-75, Pattern OR Catalyst, R:R ≥1.5:1
+
+**Tier 3 - Learning (HKD 5,000)**: Volume >1.3x, RSI 25-80, Momentum >3%, Any signal
 
 ---
 
@@ -142,7 +156,9 @@ print(result)
 ```bash
 cd /root/Catalyst-Trading-System-International/catalyst-international
 source venv/bin/activate
-python3 agent.py --force
+export DATABASE_URL="postgresql://..." RESEARCH_DATABASE_URL="postgresql://..."
+export DB_HOST=... DB_PORT=... DB_USER=... DB_PASSWORD=... DB_NAME=...
+python3 unified_agent.py --force --mode trade
 ```
 
 ### Check Logs
@@ -154,6 +170,18 @@ tail -f /var/log/catalyst-intl.log
 ---
 
 ## 🐛 Known Issues & Fixes
+
+### Bug Fixes Applied (2026-01-20)
+
+| Component | Bug | Fix |
+|-----------|-----|-----|
+| position_monitor_service.py | `quote.get('price')` returned 0 | Changed to `quote.get('last_price')` |
+| position_monitor_service.py | `place_order` method not found | Changed to `execute_trade` |
+| position_monitor_service.py | OrderResult not dict-compatible | Added dict conversion for return |
+| tool_executor.py | No position value limit | Added HKD 10,000 enforcement in `_execute_trade()` |
+| tool_executor.py | Agent couldn't see max_positions | Added to `get_portfolio` response |
+| unified_agent.py | SYSTEM_PROMPT said "25% of portfolio" | Changed to "HKD 10,000 max per position" |
+| tools.py | get_portfolio description missing max_positions | Updated description |
 
 ### Bug Fixes Applied (2026-01-16)
 
@@ -187,14 +215,15 @@ tail -f /var/log/catalyst-intl.log
 
 ## 📊 Current Portfolio Status
 
-As of 2026-01-16:
+As of 2026-01-20:
 
-| Symbol | Stock | Shares | Entry | Status |
-|--------|-------|--------|-------|--------|
-| 1800 | China Communications | 21,000 | $5.05 | New (Tier 3) |
-| 9866 | NIO | 1,000 | $36.85 | New (Tier 3) |
+| Symbol | Shares | Value (HKD) | Status |
+|--------|--------|-------------|--------|
+| 2601 | 200 | 7,840 | Within limit |
+| 2013 | 1,000 | 2,360 | Within limit |
 
-**Note**: Previous positions (981, 2382, 1810, 1024) may have been closed or adjusted.
+**Note**: All positions over HKD 10,000 limit were closed on 2026-01-20.
+Cash available: ~HKD 996,659. Position slots: 2/15 used.
 
 ---
 
@@ -206,4 +235,4 @@ As of 2026-01-16:
 
 ---
 
-**END OF CLAUDE.md v3.3.0**
+**END OF CLAUDE.md v3.7.0**
