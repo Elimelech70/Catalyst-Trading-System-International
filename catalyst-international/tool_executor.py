@@ -1,11 +1,18 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: tool_executor.py
-Version: 2.8.0
+Version: 2.9.0
 Last Updated: 2026-01-20
 Purpose: Routes Claude's tool calls to actual implementations
 
 REVISION HISTORY:
+v2.9.0 (2026-01-20) - Auto-sync positions with broker
+- Added sync_positions_with_broker() method
+- Syncs DB positions with Moomoo at start of each trade cycle
+- Closes phantom positions (in DB but not broker)
+- Adds missing positions (in broker but not DB)
+- Updates quantity mismatches automatically
+
 v2.8.0 (2026-01-20) - Enforce max_position_value_hkd limit
 - Added position value validation in _execute_trade()
 - Rejects trades exceeding max_position_value_hkd (default 10,000)
@@ -132,6 +139,118 @@ class ToolExecutor:
         except Exception as e:
             logger.warning(f"Failed to load config from {config_path}: {e}")
             return {}
+
+    def sync_positions_with_broker(self) -> dict:
+        """Sync DB positions with broker (Moomoo) at start of cycle.
+
+        This ensures DB reflects actual broker state:
+        - Closes phantom positions (in DB but not in broker)
+        - Adds missing positions (in broker but not in DB)
+        - Updates quantity mismatches
+
+        Returns:
+            dict with sync results
+        """
+        results = {
+            "synced": [],
+            "closed_phantoms": [],
+            "added_missing": [],
+            "errors": []
+        }
+
+        try:
+            # Get broker positions
+            broker_positions = self.broker.get_positions()
+            broker_dict = {str(p.symbol): p for p in broker_positions}
+            broker_symbols = set(broker_dict.keys())
+
+            # Get DB positions
+            db_positions = self.db.get_positions()
+            db_dict = {str(p.get('symbol')): p for p in db_positions}
+            db_symbols = set(db_dict.keys())
+
+            # Close phantom positions (in DB but not in broker)
+            phantoms = db_symbols - broker_symbols
+            for symbol in phantoms:
+                try:
+                    self.db.close_position(
+                        symbol=symbol,
+                        exit_price=0,
+                        reason='Auto-sync: position no longer in broker'
+                    )
+                    results["closed_phantoms"].append(symbol)
+                    logger.info(f"Auto-sync: closed phantom position {symbol}")
+                except Exception as e:
+                    results["errors"].append(f"Failed to close {symbol}: {e}")
+
+            # Add missing positions (in broker but not in DB)
+            missing = broker_symbols - db_symbols
+            for symbol in missing:
+                try:
+                    pos = broker_dict[symbol]
+                    entry = float(pos.avg_cost)
+                    self.db.record_position(
+                        symbol=symbol,
+                        side='BUY',
+                        quantity=int(pos.quantity),
+                        entry_price=entry,
+                        stop_loss=round(entry * 0.97, 2),
+                        take_profit=round(entry * 1.06, 2),
+                        broker_order_id='auto_sync',
+                        cycle_id=self.cycle_id,
+                        reason='Auto-sync: position found in broker'
+                    )
+                    results["added_missing"].append(symbol)
+                    logger.info(f"Auto-sync: added missing position {symbol}")
+                except Exception as e:
+                    results["errors"].append(f"Failed to add {symbol}: {e}")
+
+            # Update quantity mismatches
+            common = broker_symbols & db_symbols
+            for symbol in common:
+                broker_qty = int(broker_dict[symbol].quantity)
+                db_qty = int(db_dict[symbol].get('quantity', 0))
+
+                if broker_qty != db_qty:
+                    try:
+                        # Close old and create new with correct quantity
+                        pos = broker_dict[symbol]
+                        entry = float(pos.avg_cost)
+
+                        self.db.close_position(
+                            symbol=symbol,
+                            exit_price=entry,
+                            reason=f'Auto-sync: quantity update {db_qty} -> {broker_qty}'
+                        )
+
+                        self.db.record_position(
+                            symbol=symbol,
+                            side='BUY',
+                            quantity=broker_qty,
+                            entry_price=entry,
+                            stop_loss=round(entry * 0.97, 2),
+                            take_profit=round(entry * 1.06, 2),
+                            broker_order_id='auto_sync',
+                            cycle_id=self.cycle_id,
+                            reason=f'Auto-sync: quantity updated from {db_qty} to {broker_qty}'
+                        )
+                        results["synced"].append(f"{symbol}: {db_qty} -> {broker_qty}")
+                        logger.info(f"Auto-sync: updated {symbol} quantity {db_qty} -> {broker_qty}")
+                    except Exception as e:
+                        results["errors"].append(f"Failed to update {symbol}: {e}")
+
+            # Log summary
+            total_changes = len(results["closed_phantoms"]) + len(results["added_missing"]) + len(results["synced"])
+            if total_changes > 0:
+                logger.info(f"Auto-sync complete: {total_changes} changes made")
+            else:
+                logger.info("Auto-sync complete: positions already in sync")
+
+        except Exception as e:
+            logger.error(f"Auto-sync failed: {e}")
+            results["errors"].append(str(e))
+
+        return results
 
     def execute(self, tool_name: str, tool_input: dict) -> dict:
         """Execute a tool call.

@@ -98,8 +98,8 @@
 
 | File | Version | Last Updated | Purpose |
 |------|---------|--------------|---------|
-| `unified_agent.py` | 3.0.0 | 2026-01-20 | Main agent with Claude AI loop + HKD limits in SYSTEM_PROMPT |
-| `tool_executor.py` | 2.8.0 | 2026-01-20 | Tool routing + position value limit enforcement |
+| `unified_agent.py` | 3.0.0 | 2026-01-20 | Main agent with Claude AI loop + HKD limits + auto-sync |
+| `tool_executor.py` | 2.9.0 | 2026-01-20 | Tool routing + position value limit + auto-sync positions |
 | `brokers/moomoo.py` | 1.2.1 | 2026-01-06 | Moomoo client (portfolio fixes) |
 | `data/patterns.py` | 1.1.0 | 2026-01-06 | Relaxed pattern detection |
 | `data/market.py` | 2.3.0 | 2026-01-16 | Fixed volume_ratio calculation |
@@ -182,6 +182,8 @@ tail -f /var/log/catalyst-intl.log
 | tool_executor.py | Agent couldn't see max_positions | Added to `get_portfolio` response |
 | unified_agent.py | SYSTEM_PROMPT said "25% of portfolio" | Changed to "HKD 10,000 max per position" |
 | tools.py | get_portfolio description missing max_positions | Updated description |
+| tool_executor.py | Orders recorded as "submitted" not "filled" | Added `sync_positions_with_broker()` auto-sync |
+| unified_agent.py | DB positions out of sync with broker | Calls auto-sync at start of each trade cycle |
 
 ### Bug Fixes Applied (2026-01-16)
 

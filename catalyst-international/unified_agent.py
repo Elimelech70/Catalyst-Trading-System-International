@@ -696,6 +696,14 @@ class UnifiedAgent:
             agent=self,
         )
 
+        # Auto-sync positions with broker at start of cycle
+        try:
+            sync_result = executor.sync_positions_with_broker()
+            if sync_result.get("errors"):
+                logger.warning(f"Auto-sync had errors: {sync_result['errors']}")
+        except Exception as e:
+            logger.warning(f"Auto-sync failed: {e}")
+
         await self.tracker.complete_phase("INIT", model=self.model)
 
         # === RUN CLAUDE LOOP ===
