@@ -1,11 +1,17 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: unified_agent.py
-Version: 3.0.0
-Last Updated: 2026-01-17
+Version: 3.1.0
+Last Updated: 2026-01-20
 Purpose: Unified trading agent with Claude AI loop and workflow tracking
 
 REVISION HISTORY:
+v3.1.0 (2026-01-20) - CRITICAL WORKFLOW FIXES
+- Fixed missing DECIDE phase mapping (check_risk now triggers DECIDE)
+- Fixed missing MONITOR phase trigger (after successful execute_trade)
+- Added VALIDATE phase transition after check_risk result
+- Added debug logging for blocked backward phase transitions
+
 v3.0.0 (2026-01-17) - MERGED AGENT.PY FUNCTIONALITY
 - Added WorkflowTracker class for 10-phase progress tracking
 - Added SYSTEM_PROMPT with tiered entry criteria (Tier 1/2/3)
@@ -940,9 +946,38 @@ class UnifiedAgent:
                         candidates_count = len(result.get("candidates", []))
                     elif tool_name in ["get_quote", "get_technicals", "detect_patterns", "get_news"]:
                         analyzed_count += 1
+                    # === CRITICAL FIX: Handle DECIDE → VALIDATE → EXECUTE → MONITOR transitions ===
+                    elif tool_name == "check_risk" and isinstance(result, dict):
+                        # After DECIDE (check_risk), transition to VALIDATE with the result
+                        if phase_started:
+                            await self._complete_current_phase(current_phase, candidates_count, analyzed_count, trades_executed)
+                        current_phase = "VALIDATE"
+                        await self.tracker.start_phase("VALIDATE", "Risk validation")
+                        await self.tracker.complete_phase("VALIDATE",
+                            approved=result.get("approved", False),
+                            reason=result.get("reason", "")
+                        )
+                        phase_started = False  # VALIDATE is immediately completed
+
                     elif tool_name == "execute_trade" and isinstance(result, dict):
-                        if result.get("status") in ["filled", "success", "FILLED"]:
+                        if result.get("status") in ["filled", "success", "FILLED", "submitted", "SUBMITTED"]:
                             trades_executed += 1
+
+                            # After successful EXECUTE, transition to MONITOR
+                            if phase_started:
+                                await self._complete_current_phase(current_phase, candidates_count, analyzed_count, trades_executed)
+
+                            # Start and complete MONITOR phase
+                            await self.tracker.start_phase("MONITOR", "Position monitoring started")
+                            await self.tracker.complete_phase("MONITOR",
+                                symbol=result.get("symbol"),
+                                side=tool_input.get("side"),
+                                quantity=tool_input.get("quantity"),
+                                monitor_started=result.get("monitor_result") is not None
+                            )
+                            current_phase = "MONITOR"
+                            phase_started = False  # MONITOR is immediately completed
+                    # === END CRITICAL FIX ===
 
                     tool_results.append({
                         "type": "tool_result",
@@ -1019,7 +1054,13 @@ Check for positions that should be closed based on:
         return context
 
     def _tool_to_phase(self, tool_name: str, current_phase: str) -> str:
-        """Map tool name to workflow phase."""
+        """Map tool name to workflow phase.
+
+        Phase order: INIT → PORTFOLIO → SCAN → ANALYZE → DECIDE → VALIDATE → EXECUTE → MONITOR → LOG → COMPLETE
+
+        Note: DECIDE phase is triggered when check_risk is called (decision has been made).
+        MONITOR phase is triggered after successful trade execution in the tool loop.
+        """
         phase_map = {
             "get_portfolio": "PORTFOLIO",
             "scan_market": "SCAN",
@@ -1027,7 +1068,7 @@ Check for positions that should be closed based on:
             "get_technicals": "ANALYZE",
             "detect_patterns": "ANALYZE",
             "get_news": "ANALYZE",
-            "check_risk": "VALIDATE",
+            "check_risk": "DECIDE",      # FIXED: check_risk means a decision has been made
             "execute_trade": "EXECUTE",
             "close_position": "EXECUTE",
             "close_all": "EXECUTE",
@@ -1041,6 +1082,10 @@ Check for positions that should be closed based on:
         current_idx = WORKFLOW_PHASES.index(current_phase) if current_phase in WORKFLOW_PHASES else 0
         new_idx = WORKFLOW_PHASES.index(new_phase) if new_phase in WORKFLOW_PHASES else current_idx
 
+        # Log blocked backward transitions for debugging
+        if new_idx < current_idx:
+            logger.debug(f"Blocked backward phase transition: {current_phase} → {new_phase} (tool: {tool_name})")
+
         return new_phase if new_idx >= current_idx else current_phase
 
     async def _complete_current_phase(self, phase: str, candidates: int, analyzed: int, trades: int):
@@ -1049,8 +1094,12 @@ Check for positions that should be closed based on:
             await self.tracker.complete_phase(phase, candidates=candidates)
         elif phase == "ANALYZE":
             await self.tracker.complete_phase(phase, analyzed=analyzed)
+        elif phase == "DECIDE":
+            await self.tracker.complete_phase(phase, decision_made=True)
         elif phase == "EXECUTE":
             await self.tracker.complete_phase(phase, trades=trades)
+        elif phase == "MONITOR":
+            await self.tracker.complete_phase(phase, monitoring_active=True)
         else:
             await self.tracker.complete_phase(phase)
 
