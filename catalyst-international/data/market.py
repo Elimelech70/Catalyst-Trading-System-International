@@ -358,7 +358,7 @@ class MarketData:
         index: str = "ALL",
         limit: int = 10,
         min_volume_ratio: float = 1.5,
-        max_price: float = 20.0,
+        max_price: float = 1000.0,
     ) -> list[dict]:
         """Scan market for trading candidates.
 
@@ -369,7 +369,7 @@ class MarketData:
             index: Index to scan (HSI, HSCEI, HSTECH, ALL)
             limit: Maximum candidates to return
             min_volume_ratio: Minimum volume vs average
-            max_price: Maximum stock price (for position sizing limits)
+            max_price: Maximum stock price (default 1000, can buy 10+ shares)
 
         Returns:
             List of candidate stocks sorted by momentum

@@ -322,8 +322,9 @@ class ToolExecutor:
         index = inputs.get("index", "ALL")
         limit = min(inputs.get("limit", 10), 20)
         min_volume_ratio = inputs.get("min_volume_ratio", 1.5)
-        # Default max_price=20 to stay within HKD 10,000 position limit
-        max_price = inputs.get("max_price", 20.0)
+        # max_price=1000 allows most stocks (can buy as few as 10 shares)
+        # Position value limit (HKD 10K) is enforced in execute_trade
+        max_price = inputs.get("max_price", 1000.0)
 
         candidates = self.market.scan_market(
             index=index,
