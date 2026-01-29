@@ -2,13 +2,20 @@
 
 **Name of Application**: Catalyst Trading System
 **Name of file**: CLAUDE.md
-**Version**: 3.7.0
-**Last Updated**: 2026-01-20
+**Version**: 3.8.0
+**Last Updated**: 2026-01-21
 **Purpose**: Complete operational guidelines for Claude Code on HKEX production system
 
 ---
 
 ## REVISION HISTORY
+
+**v3.8.0 (2026-01-21)** - CRON FIX & 30-MIN TRADING SCHEDULE
+- Fixed duplicate cron: disabled `/etc/cron.d/catalyst-intl` (missing .env loading)
+- Updated trading schedule from hourly to every 30 minutes
+- 12 trade runs per day (was 6): 01:30, 02:00, 02:30, 03:00, 03:30, 05:00-07:30
+- Position sync now runs correctly at start of each cycle
+- Cron schedule version: v11.0.0
 
 **v3.7.0 (2026-01-20)** - POSITION VALUE LIMITS & FIXES
 - Added HKD 10,000 max position value enforcement in tool_executor.py v2.8.0
@@ -237,4 +244,40 @@ Cash available: ~HKD 996,659. Position slots: 2/15 used.
 
 ---
 
-**END OF CLAUDE.md v3.7.0**
+## 📅 Trading Schedule (Cron v11.0.0)
+
+Trading runs every 30 minutes during HKEX market hours.
+
+| UTC | HKT | Mode | Description |
+|-----|-----|------|-------------|
+| 01:00 | 09:00 | scan | Pre-market scan |
+| 01:30 | 09:30 | trade | Market open |
+| 02:00 | 10:00 | trade | |
+| 02:30 | 10:30 | trade | |
+| 03:00 | 11:00 | trade | |
+| 03:30 | 11:30 | trade | |
+| 04:00-05:00 | 12:00-13:00 | - | Lunch break (no trading) |
+| 05:00 | 13:00 | trade | Afternoon open |
+| 05:30 | 13:30 | trade | |
+| 06:00 | 14:00 | trade | |
+| 06:30 | 14:30 | trade | |
+| 07:00 | 15:00 | trade | |
+| 07:30 | 15:30 | trade | |
+| 08:00 | 16:00 | close | Market close |
+| 08:30 | 16:30 | report | Daily report generation |
+
+**Total: 12 trade runs + 1 close per day (weekdays only)**
+
+### Cron Configuration
+
+Location: User crontab (`crontab -e`)
+- Disabled: `/etc/cron.d/catalyst-intl` (was missing .env loading)
+
+Each run sources `.env` for DATABASE_URL and other environment variables:
+```bash
+cd $CATALYST_DIR && set -a && source .env && set +a && ./venv/bin/python3 unified_agent.py --mode trade
+```
+
+---
+
+**END OF CLAUDE.md v3.8.0**
