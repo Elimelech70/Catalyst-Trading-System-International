@@ -13,7 +13,10 @@ TOOLS = [
 
 Returns top stocks by momentum and volume from the specified index.
 Results include symbol, name, price, volume, change%, and relative volume.
-Use this at the start of each cycle to find potential opportunities.""",
+Use this at the start of each cycle to find potential opportunities.
+
+IMPORTANT: Default max_price is HKD 20 to stay within position size limits.
+Only stocks priced under max_price are returned as candidates.""",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -29,6 +32,10 @@ Use this at the start of each cycle to find potential opportunities.""",
                 "min_volume_ratio": {
                     "type": "number",
                     "description": "Minimum volume ratio vs average (default 1.5)"
+                },
+                "max_price": {
+                    "type": "number",
+                    "description": "Maximum stock price in HKD (default 20). Filters out expensive stocks that exceed position size limits."
                 }
             },
             "required": []
