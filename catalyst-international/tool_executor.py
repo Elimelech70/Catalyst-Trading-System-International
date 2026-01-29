@@ -486,7 +486,7 @@ class ToolExecutor:
 
         logger.info(f"Executing trade: {side} {quantity} {symbol}")
 
-        # ENFORCE POSITION VALUE LIMIT
+        # AUTO-ADJUST QUANTITY TO FIT POSITION VALUE LIMIT
         trading_config = self.config.get('trading', {}) if self.config else {}
         max_position_value = trading_config.get('max_position_value_hkd', 10000)
 
@@ -497,24 +497,21 @@ class ToolExecutor:
         except Exception:
             current_price = limit_price or 0
 
+        original_quantity = quantity
         if current_price > 0:
             position_value = quantity * current_price
             if position_value > max_position_value:
+                # Auto-adjust quantity to fit within limit
                 max_qty = int(max_position_value / current_price)
-                # Round down to lot size (typically 100 for HKEX)
-                lot_size = 100
-                max_qty = (max_qty // lot_size) * lot_size
-                logger.warning(
-                    f"Position value HKD {position_value:,.0f} exceeds limit HKD {max_position_value:,}. "
-                    f"Rejecting trade. Max allowed quantity at {current_price:.2f} is {max_qty} shares."
+                # Round down to minimum lot size of 10 (can buy as few as 10 shares)
+                lot_size = 10
+                max_qty = max((max_qty // lot_size) * lot_size, lot_size)  # At least 10 shares
+                quantity = max_qty
+                new_value = quantity * current_price
+                logger.info(
+                    f"Auto-adjusted quantity from {original_quantity} to {quantity} shares "
+                    f"to fit HKD {max_position_value:,} limit (value: HKD {new_value:,.0f})"
                 )
-                return {
-                    "success": False,
-                    "status": "REJECTED",
-                    "order_id": None,
-                    "message": f"Position value HKD {position_value:,.0f} exceeds max limit HKD {max_position_value:,}. "
-                               f"Use quantity <= {max_qty} for this price.",
-                }
 
         # Execute via broker
         result = self.broker.execute_trade(
