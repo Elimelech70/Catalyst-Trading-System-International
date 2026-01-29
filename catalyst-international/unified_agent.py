@@ -78,7 +78,7 @@ except ImportError:
     MarketData = None
     SafetyValidator = None
 
-from signals import analyze_position, SignalThresholds, DEFAULT_THRESHOLDS
+from signals import analyze_position  # Thresholds now loaded from config/exit_context.yaml
 from startup_monitor import run_startup_reconciliation, get_monitor_health_report
 
 # Position monitoring now handled by position_monitor_service.py (systemd)
@@ -577,16 +577,7 @@ class UnifiedAgent:
         self.tracker: Optional[WorkflowTracker] = None
         self.cycle_id: Optional[str] = None
 
-        # Build signal thresholds from config
-        signal_config = config.get('signals', {})
-        self.thresholds = SignalThresholds(
-            stop_loss_strong=signal_config.get('stop_loss_strong', -0.03),
-            stop_loss_moderate=signal_config.get('stop_loss_moderate', -0.02),
-            take_profit_strong=signal_config.get('take_profit_strong', 0.08),
-            take_profit_moderate=signal_config.get('take_profit_moderate', 0.05),
-            rsi_overbought_strong=signal_config.get('rsi_overbought_strong', 85),
-            rsi_overbought_moderate=signal_config.get('rsi_overbought_moderate', 75),
-        )
+        # Signal thresholds now loaded from config/exit_context.yaml (hot-reloadable)
 
         logger.info(f"UnifiedAgent initialized: {self.agent_id}, model={self.model}")
     
@@ -775,7 +766,7 @@ class UnifiedAgent:
                 position=pos,
                 quote={'price': pos.get('current_price', pos['entry_price'])},
                 technicals=technicals,
-                thresholds=self.thresholds
+                market="hkex"  # Thresholds loaded from config/exit_context.yaml
             )
             
             should_close = False
