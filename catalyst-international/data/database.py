@@ -2,8 +2,8 @@
 PostgreSQL database client for the Catalyst Trading Agent.
 
 Name of file: database.py
-Version: 1.3.0
-Last Updated: 2026-01-06
+Version: 1.4.0
+Last Updated: 2026-01-31
 
 This module handles all database operations including:
 - Agent cycle logging
@@ -12,6 +12,11 @@ This module handles all database operations including:
 - Trade history
 
 REVISION HISTORY:
+v1.4.0 (2026-01-31) - Add update_position_quantity
+- Added update_position_quantity() for in-place quantity updates
+- Used by sync_positions_with_broker to avoid close+create cycle
+- Preserves position history and broker_order_id
+
 v1.3.0 (2026-01-06) - Complete position recording
 - Added symbol column to position INSERT
 - Added entry_time to position INSERT
@@ -476,6 +481,62 @@ class DatabaseClient:
                 """,
                 (exit_price, datetime.now(HK_TZ), exit_price, exit_price, reason, symbol),
             )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def update_position_quantity(
+        self,
+        symbol: str,
+        new_quantity: int,
+        new_avg_price: float = None,
+        reason: str = "",
+    ) -> dict | None:
+        """Update an existing position's quantity in-place.
+
+        Used by sync_positions_with_broker to update quantities without
+        closing and recreating positions (which loses history).
+
+        Args:
+            symbol: Stock symbol
+            new_quantity: New quantity from broker
+            new_avg_price: New average price (optional)
+            reason: Reason for the update
+
+        Returns:
+            Updated position dict or None
+        """
+        with self.get_cursor() as cur:
+            if new_avg_price:
+                cur.execute(
+                    """
+                    UPDATE positions p SET
+                        quantity = %s,
+                        entry_price = %s,
+                        updated_at = %s,
+                        notes = COALESCE(notes, '') || ' | Updated: ' || %s
+                    FROM securities s
+                    WHERE p.security_id = s.security_id
+                        AND s.symbol = %s
+                        AND p.status = 'open'
+                    RETURNING p.*
+                    """,
+                    (new_quantity, new_avg_price, datetime.now(HK_TZ), reason, symbol),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE positions p SET
+                        quantity = %s,
+                        updated_at = %s,
+                        notes = COALESCE(notes, '') || ' | Updated: ' || %s
+                    FROM securities s
+                    WHERE p.security_id = s.security_id
+                        AND s.symbol = %s
+                        AND p.status = 'open'
+                    RETURNING p.*
+                    """,
+                    (new_quantity, datetime.now(HK_TZ), reason, symbol),
+                )
             row = cur.fetchone()
             return dict(row) if row else None
 

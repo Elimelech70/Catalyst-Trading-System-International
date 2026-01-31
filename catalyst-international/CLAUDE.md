@@ -2,13 +2,22 @@
 
 **Name of Application**: Catalyst Trading System
 **Name of file**: CLAUDE.md
-**Version**: 3.8.0
-**Last Updated**: 2026-01-21
+**Version**: 3.9.0
+**Last Updated**: 2026-01-31
 **Purpose**: Complete operational guidelines for Claude Code on HKEX production system
 
 ---
 
 ## REVISION HISTORY
+
+**v3.9.0 (2026-01-31)** - POSITION SYNC FIX
+- Fixed order fill confirmation: polls order status for 5s after SUBMITTED
+- Positions now created immediately when fill confirmed (not relying on auto-sync)
+- Improved sync: updates quantity in-place instead of close+create
+- Added update_position_quantity() to database.py v1.4.0
+- Added EOD position sync at 16:05 HKT (cron v12.0.0)
+- tool_executor.py updated to v3.0.0
+- Root cause analysis: Documentation/Reports/analysis/position-sync-analysis-2026-01-31.md
 
 **v3.8.0 (2026-01-21)** - CRON FIX & 30-MIN TRADING SCHEDULE
 - Fixed duplicate cron: disabled `/etc/cron.d/catalyst-intl` (missing .env loading)
@@ -106,7 +115,8 @@
 | File | Version | Last Updated | Purpose |
 |------|---------|--------------|---------|
 | `unified_agent.py` | 3.0.0 | 2026-01-20 | Main agent with Claude AI loop + HKD limits + auto-sync |
-| `tool_executor.py` | 2.9.0 | 2026-01-20 | Tool routing + position value limit + auto-sync positions |
+| `tool_executor.py` | 3.0.0 | 2026-01-31 | Tool routing + order fill polling + improved sync |
+| `data/database.py` | 1.4.0 | 2026-01-31 | Database ops + update_position_quantity |
 | `brokers/moomoo.py` | 1.2.1 | 2026-01-06 | Moomoo client (portfolio fixes) |
 | `data/patterns.py` | 1.1.0 | 2026-01-06 | Relaxed pattern detection |
 | `data/market.py` | 2.3.0 | 2026-01-16 | Fixed volume_ratio calculation |
