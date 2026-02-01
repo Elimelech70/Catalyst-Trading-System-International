@@ -1,11 +1,16 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: tool_executor.py
-Version: 3.0.0
-Last Updated: 2026-01-31
+Version: 3.1.0
+Last Updated: 2026-02-01
 Purpose: Routes Claude's tool calls to actual implementations
 
 REVISION HISTORY:
+v3.1.0 (2026-02-01) - Cleanup & database logging
+- Removed alert_callback and email alerting
+- Replaced alert sending with structured logging
+- All events now logged to agent_logs table via db_logger
+
 v3.0.0 (2026-01-31) - Order fill confirmation & sync improvements
 - Added order fill polling: waits up to 5 seconds for SUBMITTED orders to fill
 - Creates position immediately when fill confirmed (no more relying on auto_sync)
@@ -110,18 +115,15 @@ class ToolExecutor:
     def __init__(
         self,
         cycle_id: str,
-        alert_callback: Any = None,
         agent: Any = None,
     ):
         """Initialize tool executor.
 
         Args:
             cycle_id: Current agent cycle ID
-            alert_callback: Function/object to send alerts
             agent: Reference to TradingAgent (for Claude client access)
         """
         self.cycle_id = cycle_id
-        self.alert_callback = alert_callback
         self.agent = agent
         self.tools_called: list[dict] = []
         self.trades_executed = 0
@@ -632,29 +634,22 @@ class ToolExecutor:
             except Exception as e:
                 logger.error(f"Failed to record order: {e}")
 
-            # Send alert (handle AlertSender object or callable)
-            if self.alert_callback:
-                try:
-                    alert_msg = (
-                        f"Executed {side} {quantity} {symbol}\n"
-                        f"Price: {fill_price or 'pending'}\n"
-                        f"Stop: {stop_loss}, Target: {take_profit}\n"
-                        f"Reason: {reason}"
-                    )
-                    if hasattr(self.alert_callback, 'send'):
-                        self.alert_callback.send(
-                            "info",
-                            f"Trade Executed: {side.upper()} {symbol}",
-                            alert_msg,
-                        )
-                    elif callable(self.alert_callback):
-                        self.alert_callback(
-                            "info",
-                            f"Trade Executed: {side.upper()} {symbol}",
-                            alert_msg,
-                        )
-                except Exception as e:
-                    logger.error(f"Alert callback failed: {e}")
+            # Log trade execution
+            logger.info(
+                f"Trade executed: {side} {quantity} {symbol} @ {fill_price or 'pending'}",
+                extra={
+                    'symbol': symbol,
+                    'context': {
+                        'side': side,
+                        'quantity': quantity,
+                        'price': fill_price,
+                        'stop_loss': stop_loss,
+                        'take_profit': take_profit,
+                        'reason': reason,
+                        'order_id': order_id,
+                    }
+                }
+            )
 
             # ================================================================
             # NEW: Start position monitoring for BUY orders
@@ -788,23 +783,23 @@ class ToolExecutor:
                 except Exception as e:
                     logger.error(f"Failed to update position in DB: {e}")
 
-            # Send alert
-            if self.alert_callback and fill_price:
-                try:
-                    entry_price = position.avg_cost if hasattr(position, 'avg_cost') else position.get('avg_cost', 0)
-                    pnl = (fill_price - entry_price) * quantity if entry_price else 0
-                    
-                    alert_msg = (
-                        f"Closed {symbol} at {fill_price}\n"
-                        f"Realized P&L: HKD {pnl:,.2f}\n"
-                        f"Reason: {reason}"
-                    )
-                    if hasattr(self.alert_callback, 'send'):
-                        self.alert_callback.send("info", f"Position Closed: {symbol}", alert_msg)
-                    elif callable(self.alert_callback):
-                        self.alert_callback("info", f"Position Closed: {symbol}", alert_msg)
-                except Exception as e:
-                    logger.error(f"Alert callback failed: {e}")
+            # Log position close
+            if fill_price:
+                entry_price = position.avg_cost if hasattr(position, 'avg_cost') else position.get('avg_cost', 0)
+                pnl = (fill_price - entry_price) * quantity if entry_price else 0
+                logger.info(
+                    f"Position closed: {symbol} @ {fill_price}, P&L: HKD {pnl:,.2f}",
+                    extra={
+                        'symbol': symbol,
+                        'context': {
+                            'fill_price': fill_price,
+                            'entry_price': entry_price,
+                            'quantity': quantity,
+                            'pnl': pnl,
+                            'reason': reason,
+                        }
+                    }
+                )
 
             return {
                 "status": "success",
@@ -830,16 +825,17 @@ class ToolExecutor:
 
         results = self.broker.close_all_positions(reason)
 
-        # Send alert
-        if self.alert_callback:
-            try:
-                alert_msg = f"Emergency close triggered: {reason}\nPositions closed: {len(results)}"
-                if hasattr(self.alert_callback, 'send'):
-                    self.alert_callback.send("critical", "EMERGENCY CLOSE ALL", alert_msg)
-                elif callable(self.alert_callback):
-                    self.alert_callback("critical", "EMERGENCY CLOSE ALL", alert_msg)
-            except Exception as e:
-                logger.error(f"Alert callback failed: {e}")
+        # Log emergency close
+        logger.critical(
+            f"EMERGENCY CLOSE ALL: {reason} - {len(results)} positions closed",
+            extra={
+                'context': {
+                    'reason': reason,
+                    'positions_closed': len(results),
+                    'results': [str(r) for r in results],
+                }
+            }
+        )
 
         return {
             "status": "success",
@@ -854,28 +850,36 @@ class ToolExecutor:
     # =========================================================================
 
     def _send_alert(self, inputs: dict) -> dict:
-        """Send an alert notification."""
+        """Send an alert notification (logged to database)."""
         severity = inputs["severity"]
         subject = inputs["subject"]
         message = inputs["message"]
 
-        if self.alert_callback:
-            try:
-                if hasattr(self.alert_callback, 'send'):
-                    self.alert_callback.send(severity, subject, message)
-                elif callable(self.alert_callback):
-                    self.alert_callback(severity, subject, message)
-                return {
-                    "sent": True,
-                    "severity": severity,
-                    "subject": subject,
-                    "timestamp": datetime.now(HK_TZ).isoformat(),
+        # Map severity to log level
+        log_func = {
+            'info': logger.info,
+            'warning': logger.warning,
+            'critical': logger.critical,
+            'error': logger.error,
+        }.get(severity.lower(), logger.info)
+
+        log_func(
+            f"Alert: {subject} - {message}",
+            extra={
+                'context': {
+                    'severity': severity,
+                    'subject': subject,
+                    'message': message,
                 }
-            except Exception as e:
-                logger.error(f"Alert send failed: {e}")
-                return {"sent": False, "error": str(e)}
-        else:
-            return {"sent": False, "reason": "No alert callback configured"}
+            }
+        )
+
+        return {
+            "sent": True,
+            "severity": severity,
+            "subject": subject,
+            "timestamp": datetime.now(HK_TZ).isoformat(),
+        }
 
     def _log_decision(self, inputs: dict) -> dict:
         """Log a trading decision for audit trail."""
@@ -924,21 +928,18 @@ class ToolExecutor:
 
 def create_tool_executor(
     cycle_id: str,
-    alert_callback: Any = None,
     agent: Any = None,
 ) -> ToolExecutor:
     """Create a new tool executor for a cycle.
-    
+
     Args:
         cycle_id: Current agent cycle ID
-        alert_callback: Function/object to send alerts
         agent: Reference to TradingAgent (for position monitoring)
-        
+
     Returns:
         ToolExecutor instance
     """
     return ToolExecutor(
         cycle_id=cycle_id,
-        alert_callback=alert_callback,
         agent=agent,
     )

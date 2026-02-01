@@ -2,11 +2,17 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: position_monitor_service.py
-Version: 1.0.1
-Last Updated: 2026-01-20
+Version: 1.1.0
+Last Updated: 2026-02-01
 Purpose: Persistent systemd service for continuous HKEX position monitoring
 
 REVISION HISTORY:
+v1.1.0 (2026-02-01) - Cleanup & database logging
+  - Removed research_pool and consciousness integration
+  - Removed email alerting
+  - Added database logging via db_logger.py
+  - All events now logged to agent_logs table
+
 v1.0.1 (2026-01-20) - Bug fixes
   - Fixed price key: use 'last_price' instead of 'price' from quote
   - Fixed execute_trade method name (was place_order)
@@ -17,7 +23,6 @@ v1.0.0 (2026-01-16) - Initial implementation
   - Checks ALL open positions every 5 minutes
   - Uses signals.py for exit detection
   - Haiku consultation for moderate signals
-  - Consciousness integration for alerts
 
 Description:
 This service runs continuously during HKEX market hours, monitoring all
@@ -28,7 +33,7 @@ unmonitored.
 Usage:
     # Direct execution (testing)
     python3 position_monitor_service.py
-    
+
     # As systemd service
     systemctl start position-monitor
     systemctl status position-monitor
@@ -36,7 +41,6 @@ Usage:
 
 Environment Variables:
     DATABASE_URL          - PostgreSQL connection (catalyst_intl)
-    RESEARCH_DATABASE_URL - PostgreSQL connection (catalyst_research)
     ANTHROPIC_API_KEY     - For Haiku consultations
     MONITOR_CHECK_INTERVAL - Check interval in seconds (default: 300)
     MONITOR_DRY_RUN       - If 'true', don't execute actual trades
@@ -374,24 +378,26 @@ class BrokerInterface:
 class PositionMonitorService:
     """
     Persistent position monitoring service.
-    
+
     Runs as a systemd daemon, checking all open positions every
     CHECK_INTERVAL seconds during market hours.
     """
-    
+
     def __init__(self):
         self.running = True
         self.check_count = 0
-        
+
         # Connections
         self.db_pool: Optional[asyncpg.Pool] = None
-        self.research_pool: Optional[asyncpg.Pool] = None
         self.broker = BrokerInterface()
         self.anthropic_client = None
-        
+
+        # Database logging handler
+        self.db_log_handler = None
+
         # Configuration
         self.thresholds = DEFAULT_THRESHOLDS
-        
+
         # Statistics
         self.stats = {
             'positions_checked': 0,
@@ -409,13 +415,13 @@ class PositionMonitorService:
     async def initialize(self) -> bool:
         """Initialize all connections."""
         logger.info("Initializing service...")
-        
+
         # Database - trading
         db_url = os.getenv("DATABASE_URL") or os.getenv("INTL_DATABASE_URL")
         if not db_url:
             logger.error("DATABASE_URL not set")
             return False
-            
+
         try:
             self.db_pool = await asyncpg.create_pool(
                 db_url,
@@ -427,26 +433,24 @@ class PositionMonitorService:
         except Exception as e:
             logger.error(f"Trading database connection failed: {e}")
             return False
-            
-        # Database - research (optional, for consciousness)
-        research_url = os.getenv("RESEARCH_DATABASE_URL")
-        if research_url:
-            try:
-                self.research_pool = await asyncpg.create_pool(
-                    research_url,
-                    min_size=1,
-                    max_size=2,
-                    command_timeout=30
-                )
-                logger.info("Research database connected")
-            except Exception as e:
-                logger.warning(f"Research database connection failed: {e}")
-                
+
+        # Setup database logging (use URL, not pool - db_logger uses psycopg2)
+        try:
+            from db_logger import setup_db_logging
+            self.db_log_handler = setup_db_logging(
+                db_url,
+                'position_monitor',
+                level=logging.INFO
+            )
+            logger.info("Database logging initialized")
+        except Exception as e:
+            logger.warning(f"Database logging setup failed: {e}")
+
         # Broker
         if not self.broker.connect():
             logger.error("Broker connection failed")
             return False
-            
+
         # Anthropic (optional)
         if ANTHROPIC_AVAILABLE:
             api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -457,7 +461,7 @@ class PositionMonitorService:
                 logger.warning("ANTHROPIC_API_KEY not set - Haiku disabled")
         else:
             logger.warning("anthropic package not installed - Haiku disabled")
-            
+
         self.stats['started_at'] = datetime.now(HK_TZ)
         logger.info("Service initialization complete")
         return True
@@ -465,15 +469,16 @@ class PositionMonitorService:
     async def shutdown(self):
         """Clean shutdown of all connections."""
         logger.info("Shutting down service...")
-        
+
+        # Stop database logging handler
+        if self.db_log_handler:
+            self.db_log_handler.stop()
+
         if self.db_pool:
             await self.db_pool.close()
-            
-        if self.research_pool:
-            await self.research_pool.close()
-            
+
         self.broker.disconnect()
-        
+
         logger.info("Service shutdown complete")
         
     # ========================================================================
@@ -655,48 +660,6 @@ class PositionMonitorService:
         except Exception as e:
             logger.warning(f"Failed to update service health: {e}")
             
-    # ========================================================================
-    # CONSCIOUSNESS INTEGRATION
-    # ========================================================================
-    
-    async def notify_consciousness(
-        self,
-        message: str,
-        priority: str = 'normal',
-        subject: str = 'Position Monitor Alert'
-    ):
-        """Send notification to consciousness framework."""
-        if not self.research_pool:
-            return
-            
-        try:
-            async with self.research_pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO claude_messages (
-                        from_agent, to_agent, subject, body, 
-                        priority, msg_type, status
-                    ) VALUES (
-                        'position_monitor', 'big_bro', $1, $2,
-                        $3, 'alert', 'pending'
-                    )
-                """, subject, message, priority)
-        except Exception as e:
-            logger.warning(f"Failed to notify consciousness: {e}")
-            
-    async def record_observation(self, content: str, obs_type: str = 'trading'):
-        """Record observation in consciousness."""
-        if not self.research_pool:
-            return
-            
-        try:
-            async with self.research_pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO claude_observations (
-                        agent_id, observation_type, content
-                    ) VALUES ('position_monitor', $1, $2)
-                """, obs_type, content)
-        except Exception as e:
-            logger.warning(f"Failed to record observation: {e}")
             
     # ========================================================================
     # HAIKU CONSULTATION
@@ -866,18 +829,20 @@ Then a brief reason (one sentence) on the second line.
             # Update database
             await self.update_position_exit(position_id, fill_price, reason, pnl)
             await self.record_exit_order(position_id, symbol, quantity, fill_price)
-            
-            # Notify consciousness
-            await self.notify_consciousness(
-                f"Exited {symbol} x {quantity} @ HKD {fill_price:.2f}\n"
-                f"Reason: {reason}\n"
-                f"P&L: HKD {pnl:+.2f} ({pnl_pct:+.2f}%)",
-                priority='high'
-            )
-            
+
+            # Log exit with structured context
             logger.info(
-                f"Exit complete: {symbol} @ HKD {fill_price:.2f} "
-                f"(P&L: HKD {pnl:+.2f} / {pnl_pct:+.2f}%)"
+                f"Exit complete: {symbol} @ HKD {fill_price:.2f} (P&L: HKD {pnl:+.2f} / {pnl_pct:+.2f}%)",
+                extra={
+                    'symbol': symbol,
+                    'context': {
+                        'fill_price': fill_price,
+                        'quantity': quantity,
+                        'pnl': pnl,
+                        'pnl_pct': pnl_pct,
+                        'reason': reason,
+                    }
+                }
             )
             
             self.stats['exits_executed'] += 1
@@ -941,12 +906,18 @@ Then a brief reason (one sentence) on the second line.
         
         # Update health status
         await self.update_service_health()
-        
-        # Record observation if exits occurred
+
+        # Log if exits occurred
         if exits_this_cycle > 0:
-            await self.record_observation(
-                f"Monitoring cycle #{self.check_count}: "
-                f"{exits_this_cycle} exits from {len(positions)} positions"
+            logger.info(
+                f"Monitoring cycle #{self.check_count}: {exits_this_cycle} exits from {len(positions)} positions",
+                extra={
+                    'context': {
+                        'cycle': self.check_count,
+                        'exits': exits_this_cycle,
+                        'total_positions': len(positions),
+                    }
+                }
             )
             
     # ========================================================================
@@ -957,22 +928,18 @@ Then a brief reason (one sentence) on the second line.
         """Main service loop."""
         logger.info("=" * 60)
         logger.info("HKEX Position Monitor Service")
-        logger.info(f"Version: 1.0.0")
+        logger.info(f"Version: 1.1.0")
         logger.info(f"Check interval: {CHECK_INTERVAL} seconds")
         logger.info(f"Dry run mode: {DRY_RUN}")
         logger.info("=" * 60)
-        
+
         # Initialize
         if not await self.initialize():
             logger.error("Initialization failed, exiting")
             return
-            
-        # Notify startup
-        await self.notify_consciousness(
-            "Position Monitor Service started",
-            priority='low',
-            subject='Service Startup'
-        )
+
+        # Log startup
+        logger.info("Position Monitor Service started")
         
         # Main loop
         while self.running:
@@ -1009,13 +976,10 @@ Then a brief reason (one sentence) on the second line.
                 await asyncio.sleep(60)
                 
         # Shutdown
-        await self.notify_consciousness(
-            f"Position Monitor Service stopped. "
-            f"Cycles: {self.check_count}, Exits: {self.stats['exits_executed']}",
-            priority='normal',
-            subject='Service Shutdown'
+        logger.info(
+            f"Position Monitor Service stopped. Cycles: {self.check_count}, Exits: {self.stats['exits_executed']}"
         )
-        
+
         await self.shutdown()
         
         # Final stats
