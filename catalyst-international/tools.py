@@ -13,7 +13,10 @@ TOOLS = [
 
 Returns top stocks by momentum and volume from the specified index.
 Results include symbol, name, price, volume, change%, and relative volume.
-Use this at the start of each cycle to find potential opportunities.""",
+Use this at the start of each cycle to find potential opportunities.
+
+Note: Position size limit (HKD 10K) is enforced at trade execution, not here.
+You can buy as few as 10 shares, so most stocks are tradeable.""",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -29,6 +32,10 @@ Use this at the start of each cycle to find potential opportunities.""",
                 "min_volume_ratio": {
                     "type": "number",
                     "description": "Minimum volume ratio vs average (default 1.5)"
+                },
+                "max_price": {
+                    "type": "number",
+                    "description": "Maximum stock price in HKD (default 1000). Most stocks tradeable with 10+ share minimum."
                 }
             },
             "required": []

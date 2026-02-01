@@ -1,11 +1,18 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: tool_executor.py
-Version: 2.9.0
-Last Updated: 2026-01-20
+Version: 3.0.0
+Last Updated: 2026-01-31
 Purpose: Routes Claude's tool calls to actual implementations
 
 REVISION HISTORY:
+v3.0.0 (2026-01-31) - Order fill confirmation & sync improvements
+- Added order fill polling: waits up to 5 seconds for SUBMITTED orders to fill
+- Creates position immediately when fill confirmed (no more relying on auto_sync)
+- Improved sync: updates quantity in-place instead of close+create
+- Added update_position_quantity to database
+- Fixes position mismatch between DB and Moomoo
+
 v2.9.0 (2026-01-20) - Auto-sync positions with broker
 - Added sync_positions_with_broker() method
 - Syncs DB positions with Moomoo at start of each trade cycle
@@ -205,34 +212,21 @@ class ToolExecutor:
                 except Exception as e:
                     results["errors"].append(f"Failed to add {symbol}: {e}")
 
-            # Update quantity mismatches
+            # Update quantity mismatches (in-place update, not close+create)
             common = broker_symbols & db_symbols
             for symbol in common:
                 broker_qty = int(broker_dict[symbol].quantity)
                 db_qty = int(db_dict[symbol].get('quantity', 0))
+                broker_price = float(broker_dict[symbol].avg_cost)
 
                 if broker_qty != db_qty:
                     try:
-                        # Close old and create new with correct quantity
-                        pos = broker_dict[symbol]
-                        entry = float(pos.avg_cost)
-
-                        self.db.close_position(
+                        # Update quantity in-place instead of close+create
+                        self.db.update_position_quantity(
                             symbol=symbol,
-                            exit_price=entry,
-                            reason=f'Auto-sync: quantity update {db_qty} -> {broker_qty}'
-                        )
-
-                        self.db.record_position(
-                            symbol=symbol,
-                            side='BUY',
-                            quantity=broker_qty,
-                            entry_price=entry,
-                            stop_loss=round(entry * 0.97, 2),
-                            take_profit=round(entry * 1.06, 2),
-                            broker_order_id='auto_sync',
-                            cycle_id=self.cycle_id,
-                            reason=f'Auto-sync: quantity updated from {db_qty} to {broker_qty}'
+                            new_quantity=broker_qty,
+                            new_avg_price=broker_price,
+                            reason=f'Auto-sync: quantity {db_qty} -> {broker_qty}'
                         )
                         results["synced"].append(f"{symbol}: {db_qty} -> {broker_qty}")
                         logger.info(f"Auto-sync: updated {symbol} quantity {db_qty} -> {broker_qty}")
@@ -322,11 +316,15 @@ class ToolExecutor:
         index = inputs.get("index", "ALL")
         limit = min(inputs.get("limit", 10), 20)
         min_volume_ratio = inputs.get("min_volume_ratio", 1.5)
+        # max_price=1000 allows most stocks (can buy as few as 10 shares)
+        # Position value limit (HKD 10K) is enforced in execute_trade
+        max_price = inputs.get("max_price", 1000.0)
 
         candidates = self.market.scan_market(
             index=index,
             limit=limit,
             min_volume_ratio=min_volume_ratio,
+            max_price=max_price,
         )
 
         return {
@@ -334,6 +332,7 @@ class ToolExecutor:
             "candidates_found": len(candidates),
             "candidates": candidates,
             "min_volume_ratio": min_volume_ratio,
+            "max_price": max_price,
             "timestamp": datetime.now(HK_TZ).isoformat(),
         }
 
@@ -481,7 +480,7 @@ class ToolExecutor:
 
         logger.info(f"Executing trade: {side} {quantity} {symbol}")
 
-        # ENFORCE POSITION VALUE LIMIT
+        # AUTO-ADJUST QUANTITY TO FIT POSITION VALUE LIMIT
         trading_config = self.config.get('trading', {}) if self.config else {}
         max_position_value = trading_config.get('max_position_value_hkd', 10000)
 
@@ -492,24 +491,21 @@ class ToolExecutor:
         except Exception:
             current_price = limit_price or 0
 
+        original_quantity = quantity
         if current_price > 0:
             position_value = quantity * current_price
             if position_value > max_position_value:
+                # Auto-adjust quantity to fit within limit
                 max_qty = int(max_position_value / current_price)
-                # Round down to lot size (typically 100 for HKEX)
-                lot_size = 100
-                max_qty = (max_qty // lot_size) * lot_size
-                logger.warning(
-                    f"Position value HKD {position_value:,.0f} exceeds limit HKD {max_position_value:,}. "
-                    f"Rejecting trade. Max allowed quantity at {current_price:.2f} is {max_qty} shares."
+                # Round down to minimum lot size of 10 (can buy as few as 10 shares)
+                lot_size = 10
+                max_qty = max((max_qty // lot_size) * lot_size, lot_size)  # At least 10 shares
+                quantity = max_qty
+                new_value = quantity * current_price
+                logger.info(
+                    f"Auto-adjusted quantity from {original_quantity} to {quantity} shares "
+                    f"to fit HKD {max_position_value:,} limit (value: HKD {new_value:,.0f})"
                 )
-                return {
-                    "success": False,
-                    "status": "REJECTED",
-                    "order_id": None,
-                    "message": f"Position value HKD {position_value:,.0f} exceeds max limit HKD {max_position_value:,}. "
-                               f"Use quantity <= {max_qty} for this price.",
-                }
 
         # Execute via broker
         result = self.broker.execute_trade(
@@ -543,6 +539,40 @@ class ToolExecutor:
         is_filled = status in filled_statuses
         is_partial = status in partial_filled_statuses
         is_submitted = status in submitted_statuses
+
+        # FIX: Poll for fill confirmation if order was submitted but not filled
+        # Paper trading orders typically fill within 1-2 seconds
+        if is_submitted and order_id:
+            import time
+            logger.info(f"Order {order_id} submitted, polling for fill confirmation...")
+            for attempt in range(5):  # Poll up to 5 times (5 seconds total)
+                time.sleep(1)
+                try:
+                    order_status = self.broker.get_order_status(order_id)
+                    current_status = order_status.get("status", "")
+                    filled_qty = order_status.get("filled_quantity", 0)
+
+                    if current_status in filled_statuses:
+                        logger.info(f"Order {order_id} confirmed FILLED after {attempt+1}s")
+                        is_filled = True
+                        is_submitted = False
+                        fill_price = order_status.get("filled_price") or fill_price
+                        break
+                    elif current_status in partial_filled_statuses:
+                        logger.info(f"Order {order_id} partially filled: {filled_qty} shares")
+                        is_partial = True
+                        is_submitted = False
+                        fill_price = order_status.get("filled_price") or fill_price
+                        break
+                    elif current_status in ["CANCELLED", "FAILED", "DELETED"]:
+                        logger.warning(f"Order {order_id} was {current_status}")
+                        is_submitted = False
+                        break
+                except Exception as e:
+                    logger.warning(f"Failed to poll order status: {e}")
+
+            if is_submitted:
+                logger.warning(f"Order {order_id} still not filled after 5s - will rely on auto-sync")
 
         if is_filled or is_partial or is_submitted:
             # Only count as executed trade if actually filled
