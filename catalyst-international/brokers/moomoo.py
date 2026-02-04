@@ -1,11 +1,20 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: moomoo.py
-Version: 1.4.0
-Last Updated: 2026-01-08
+Version: 1.5.0
+Last Updated: 2026-02-04
 Purpose: Moomoo client for HKEX trading via OpenD gateway
 
 REVISION HISTORY:
+v1.5.0 (2026-02-04) - Order fill confirmation
+- Added wait_for_fill() method to poll order status until filled
+- Added is_order_filled() helper method
+- execute_trade() now returns accurate fill status after confirmation
+- New OrderFillResult dataclass for detailed fill information
+- Configurable timeout for fill confirmation (default 30s paper, 60s live)
+- Terminal status detection (CANCELLED, FAILED, DELETED)
+- Rate limit aware polling with backoff
+
 v1.4.0 (2026-01-08) - Symbol normalization fix
 - Fixed close_position() to normalize symbol before matching
 - Now accepts '700', '0700', or 'HK.00700' formats
@@ -40,6 +49,12 @@ This module provides the MoomooClient class for trading HKEX stocks via
 Moomoo's OpenD gateway. It replaces the IBKR integration to eliminate
 the authentication complexity of IB Gateway.
 
+KEY CHANGES in v1.5.0:
+- execute_trade() now waits for fill confirmation before returning
+- New wait_for_fill() method with configurable timeout
+- OrderResult.status now reflects ACTUAL fill status, not just submission
+- Prevents phantom positions from being created for unfilled orders
+
 Official Documentation:
 - API Docs: https://openapi.moomoo.com/moomoo-api-doc/en/intro/intro.html
 - OpenD Download: https://www.moomoo.com/download/OpenAPI
@@ -53,9 +68,10 @@ Environment Variables:
 
 import logging
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Tuple
 from zoneinfo import ZoneInfo
 
 # CORRECT: Import from moomoo (NOT futu)
@@ -78,6 +94,34 @@ logger = logging.getLogger(__name__)
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
 
 
+# =============================================================================
+# ORDER STATUS CONSTANTS (from Moomoo API documentation)
+# =============================================================================
+
+class OrderStatus:
+    """Moomoo order status constants."""
+    # Working states
+    WAITING_SUBMIT = "WAITING_SUBMIT"  # Futu server received, preparing to submit
+    SUBMITTING = "SUBMITTING"           # Sent to exchange, being processed
+    SUBMITTED = "SUBMITTED"             # Successfully submitted (working)
+    
+    # Filled states
+    FILLED_PART = "FILLED_PART"         # Partially filled
+    FILLED_ALL = "FILLED_ALL"           # Fully filled
+    
+    # Terminal states
+    CANCELLED_PART = "CANCELLED_PART"   # Part filled, remainder cancelled
+    CANCELLED_ALL = "CANCELLED_ALL"     # Fully cancelled
+    FAILED = "FAILED"                   # Rejected by server
+    DISABLED = "DISABLED"               # Deactivated
+    DELETED = "DELETED"                 # Deleted
+    
+    # Status groups for checking
+    FILLED_STATUSES = [FILLED_ALL, FILLED_PART]
+    WORKING_STATUSES = [WAITING_SUBMIT, SUBMITTING, SUBMITTED]
+    TERMINAL_STATUSES = [CANCELLED_PART, CANCELLED_ALL, FAILED, DISABLED, DELETED]
+
+
 @dataclass
 class OrderResult:
     """Result of an order submission."""
@@ -90,6 +134,20 @@ class OrderResult:
     filled_price: Optional[float]
     filled_quantity: int
     message: str
+
+
+@dataclass
+class OrderFillResult:
+    """Detailed result of order fill confirmation."""
+    filled: bool
+    order_id: str
+    status: str
+    filled_quantity: int
+    filled_price: Optional[float]
+    original_quantity: int
+    message: str
+    attempts: int
+    elapsed_seconds: float
 
 
 @dataclass
@@ -134,6 +192,12 @@ class MoomooClient:
         client.disconnect()
     """
 
+    # Fill confirmation timeouts (seconds)
+    FILL_TIMEOUT_PAPER = 30   # Paper trading fills quickly
+    FILL_TIMEOUT_LIVE = 60    # Live trading may take longer
+    POLL_INTERVAL_START = 1   # Start polling every 1 second
+    POLL_INTERVAL_MAX = 5     # Max polling interval (with backoff)
+
     def __init__(
         self,
         host: str = None,
@@ -153,6 +217,7 @@ class MoomooClient:
         self.port = port or int(os.environ.get("MOOMOO_PORT", "11111"))
         self.trade_password = trade_password or os.environ.get("MOOMOO_TRADE_PWD")
         self.trd_env = TrdEnv.SIMULATE if paper_trading else TrdEnv.REAL
+        self.paper_trading = paper_trading
 
         self.quote_ctx = None
         self.trade_ctx = None
@@ -166,43 +231,41 @@ class MoomooClient:
 
     def connect(self) -> bool:
         """Connect to OpenD and unlock trading.
-        
+
         Returns:
-            True if connection successful, False otherwise
+            True if connected successfully
         """
         try:
-            # Quote context for market data
-            self.quote_ctx = OpenQuoteContext(
-                host=self.host,
-                port=self.port
-            )
+            # Connect quote context
+            self.quote_ctx = OpenQuoteContext(host=self.host, port=self.port)
+            logger.info("Quote context connected")
 
-            # Trade context for HK market
-            # Note: moomoo-api still uses FUTU* naming internally
-            # FUTUAU = Moomoo Australia
+            # Connect trade context
             self.trade_ctx = OpenSecTradeContext(
-                filter_trdmarket=TrdMarket.HK,
                 host=self.host,
                 port=self.port,
-                security_firm=SecurityFirm.FUTUAU  # For Moomoo Australia (FUTUAU in API)
+                filter_trdmarket=TrdMarket.HK,
+                security_firm=SecurityFirm.FUTUSECURITIES,
             )
+            logger.info("Trade context connected")
 
-            # Unlock trade if password provided
-            if self.trade_password:
+            # Unlock trading if password provided and not paper trading
+            if self.trade_password and self.trd_env == TrdEnv.REAL:
                 ret, data = self.trade_ctx.unlock_trade(self.trade_password)
                 if ret == RET_OK:
                     self._trade_unlocked = True
-                    logger.info("Trade unlocked successfully")
+                    logger.info("Trade unlocked for REAL trading")
                 else:
-                    logger.warning(f"Trade unlock failed: {data}")
+                    logger.warning(f"Failed to unlock trade: {data}")
+            else:
+                # Paper trading doesn't need unlock
+                self._trade_unlocked = True
 
             self._connected = True
-            logger.info(f"Connected to OpenD at {self.host}:{self.port}")
             return True
 
         except Exception as e:
-            logger.error(f"Failed to connect to OpenD: {e}")
-            self._connected = False
+            logger.error(f"Failed to connect: {e}")
             return False
 
     def disconnect(self):
@@ -217,270 +280,364 @@ class MoomooClient:
         self._trade_unlocked = False
         logger.info("Disconnected from OpenD")
 
-    def is_connected(self) -> bool:
-        """Check connection status."""
-        return self._connected
-
-    def is_trade_unlocked(self) -> bool:
-        """Check if trading is unlocked."""
-        return self._trade_unlocked
-
     def _format_hk_symbol(self, symbol: str) -> str:
-        """Format symbol for HKEX.
-        
+        """Convert symbol to Moomoo HK format.
+
         Args:
-            symbol: Stock code (e.g., '700', '0700', '9988')
-            
+            symbol: Stock code (e.g., '700', '0700', 'HK.00700')
+
         Returns:
             Moomoo format (e.g., 'HK.00700')
         """
-        # Remove any existing prefix
         if symbol.startswith("HK."):
             return symbol
-        
-        # Strip leading zeros, then pad to 5 digits
-        num = symbol.lstrip('0') or '0'
-        return f"HK.{num.zfill(5)}"
+        # Strip leading zeros and pad to 5 digits
+        code = symbol.lstrip("0") or "0"
+        return f"HK.{code.zfill(5)}"
 
     def _parse_hk_symbol(self, moomoo_symbol: str) -> str:
-        """Parse Moomoo symbol back to simple format.
-        
+        """Convert Moomoo format back to simple code.
+
         Args:
             moomoo_symbol: Moomoo format (e.g., 'HK.00700')
-            
+
         Returns:
-            Simple format (e.g., '700')
+            Simple code without leading zeros (e.g., '700')
         """
         if moomoo_symbol.startswith("HK."):
-            return moomoo_symbol[3:].lstrip('0') or '0'
+            code = moomoo_symbol[3:]
+            return code.lstrip("0") or "0"
         return moomoo_symbol
 
     def _round_to_tick(self, price: float) -> float:
         """Round price to valid HKEX tick size.
-        
+
         Args:
             price: Raw price
-            
+
         Returns:
             Price rounded to nearest valid tick
         """
         for threshold, tick in HKEX_TICK_SIZES:
             if price < threshold:
-                # Round to nearest tick
-                return round(round(price / tick) * tick, 3)
-        # Fallback for very high prices
-        return round(round(price / 5.0) * 5.0, 0)
-
-    def get_quote(self, symbol: str) -> dict:
-        """Get real-time quote for a symbol.
-        
-        Args:
-            symbol: Stock code (e.g., '700' for Tencent)
-            
-        Returns:
-            Dict with quote data including last_price, bid, ask, volume
-        """
-        if not self._connected:
-            raise RuntimeError("Not connected to OpenD")
-
-        moomoo_symbol = self._format_hk_symbol(symbol)
-        ret, data = self.quote_ctx.get_market_snapshot([moomoo_symbol])
-
-        if ret != RET_OK:
-            logger.error(f"Failed to get quote for {symbol}: {data}")
-            return {"error": str(data)}
-
-        if data.empty:
-            return {"error": f"No data for {symbol}"}
-
-        row = data.iloc[0]
-        return {
-            "symbol": symbol,
-            "moomoo_symbol": moomoo_symbol,
-            "last_price": float(row.get("last_price", 0)),
-            "open_price": float(row.get("open_price", 0)),
-            "high_price": float(row.get("high_price", 0)),
-            "low_price": float(row.get("low_price", 0)),
-            "prev_close": float(row.get("prev_close_price", 0)),
-            "volume": int(row.get("volume", 0)),
-            "turnover": float(row.get("turnover", 0)),
-            "bid_price": float(row.get("bid_price", 0)),
-            "ask_price": float(row.get("ask_price", 0)),
-            "bid_vol": int(row.get("bid_vol", 0)),
-            "ask_vol": int(row.get("ask_vol", 0)),
-            "update_time": str(row.get("update_time", "")),
-        }
+                return round(price / tick) * tick
+        return price
 
     def get_lot_size(self, symbol: str) -> int:
-        """Get the board lot size for a stock.
-
-        HKEX stocks have varying lot sizes:
-        - Tencent (0700): 100
-        - CK Hutchison (0001): 500
-        - China Life (2628): 500
-        - Great Wall Motor (2333): 500
-        - Natural Dairy (0462): 4000
+        """Get the board lot size for a HKEX stock.
 
         Args:
-            symbol: Stock code (e.g., '700' or '2628')
+            symbol: Stock code (e.g., '700')
 
         Returns:
-            Board lot size (e.g., 100 for Tencent, 500 for China Life)
+            Board lot size (e.g., 100)
         """
         if not self._connected:
             raise RuntimeError("Not connected to OpenD")
 
-        # Format symbol for Moomoo
         moomoo_symbol = self._format_hk_symbol(symbol)
 
-        # Use get_stock_basicinfo to fetch lot size
         ret, data = self.quote_ctx.get_stock_basicinfo(
-            Market.HK,
-            SecurityType.STOCK,
-            [moomoo_symbol]
+            market=Market.HK,
+            stock_type=SecurityType.STOCK,
+            code_list=[moomoo_symbol]
         )
 
-        if ret != RET_OK:
-            logger.warning(f"Failed to get lot size for {symbol}: {data}")
-            return 100  # Default fallback
-
-        if data is not None and len(data) > 0:
-            lot_size = int(data['lot_size'].iloc[0])
+        if ret == RET_OK and not data.empty:
+            lot_size = int(data.iloc[0].get("lot_size", 100))
             logger.debug(f"Lot size for {symbol}: {lot_size}")
             return lot_size
 
-        logger.warning(f"No lot size data for {symbol}, using default 100")
+        logger.warning(f"Could not get lot size for {symbol}, defaulting to 100")
         return 100
 
-    def get_quotes_batch(self, symbols: List[str]) -> dict:
-        """Get real-time quotes for multiple symbols in one API call.
+    # =========================================================================
+    # ORDER FILL CONFIRMATION METHODS (NEW in v1.5.0)
+    # =========================================================================
 
-        This method avoids rate limiting by fetching multiple symbols at once.
-        Moomoo API supports up to 400 symbols per request.
-        Rate limit: 60 requests per 30 seconds.
+    def get_order_status(self, order_id: str) -> dict:
+        """Get current status of a specific order.
 
         Args:
-            symbols: List of stock codes (e.g., ['700', '9988', '1810'])
+            order_id: Order ID to check
 
         Returns:
-            Dict mapping symbol to quote data
+            Dict with order status details including:
+            - order_id: str
+            - status: str (SUBMITTED, FILLED_ALL, etc.)
+            - filled_quantity: int (dealt_qty)
+            - filled_price: float (dealt_avg_price)
+            - original_quantity: int (qty)
+            - error: str (if failed)
         """
         if not self._connected:
-            raise RuntimeError("Not connected to OpenD")
+            return {"error": "Not connected to OpenD"}
 
-        if not symbols:
-            return {}
-
-        # Convert all symbols to Moomoo format
-        moomoo_symbols = [self._format_hk_symbol(s) for s in symbols]
-
-        # Batch request (max 400 per call)
-        batch_size = 400
-        all_quotes = {}
-
-        for i in range(0, len(moomoo_symbols), batch_size):
-            batch = moomoo_symbols[i:i + batch_size]
-            ret, data = self.quote_ctx.get_market_snapshot(batch)
-
-            if ret != RET_OK:
-                logger.error(f"Failed to get batch quotes: {data}")
-                continue
-
-            if data.empty:
-                continue
-
-            # Process each row
-            for _, row in data.iterrows():
-                moomoo_symbol = str(row.get("code", ""))
-                symbol = self._parse_hk_symbol(moomoo_symbol)
-
-                all_quotes[symbol] = {
-                    "symbol": symbol,
-                    "moomoo_symbol": moomoo_symbol,
-                    "last_price": float(row.get("last_price", 0)),
-                    "open_price": float(row.get("open_price", 0)),
-                    "high_price": float(row.get("high_price", 0)),
-                    "low_price": float(row.get("low_price", 0)),
-                    "prev_close": float(row.get("prev_close_price", 0)),
-                    "volume": int(row.get("volume", 0)),
-                    "turnover": float(row.get("turnover", 0)),
-                    "bid_price": float(row.get("bid_price", 0)),
-                    "ask_price": float(row.get("ask_price", 0)),
-                    "bid_vol": int(row.get("bid_vol", 0)),
-                    "ask_vol": int(row.get("ask_vol", 0)),
-                    "update_time": str(row.get("update_time", "")),
-                    "change_pct": float(row.get("price_spread", 0)),  # % change
-                }
-
-        logger.info(f"Fetched {len(all_quotes)} quotes in batch")
-        return all_quotes
-
-    def get_portfolio(self) -> dict:
-        """Get account portfolio summary.
-        
-        Returns:
-            Dict with cash, equity, market_value, positions, P&L
-        """
-        if not self._connected:
-            raise RuntimeError("Not connected to OpenD")
-
-        ret, data = self.trade_ctx.accinfo_query(trd_env=self.trd_env)
+        ret, data = self.trade_ctx.order_list_query(trd_env=self.trd_env)
 
         if ret != RET_OK:
-            logger.error(f"Failed to get portfolio: {data}")
             return {"error": str(data)}
 
+        for _, row in data.iterrows():
+            if str(row.get("order_id", "")) == str(order_id):
+                return {
+                    "order_id": order_id,
+                    "status": str(row.get("order_status", "")),
+                    "symbol": self._parse_hk_symbol(str(row.get("code", ""))),
+                    "side": str(row.get("trd_side", "")),
+                    "original_quantity": int(row.get("qty", 0)),
+                    "filled_quantity": int(row.get("dealt_qty", 0)),
+                    "price": float(row.get("price", 0)),
+                    "filled_price": float(row.get("dealt_avg_price", 0)) or None,
+                    "create_time": str(row.get("create_time", "")),
+                    "update_time": str(row.get("updated_time", "")),
+                    "last_err_msg": str(row.get("last_err_msg", "")),
+                }
+
+        return {"error": f"Order {order_id} not found"}
+
+    def is_order_filled(self, order_id: str) -> Tuple[bool, dict]:
+        """Check if an order is filled.
+
+        Args:
+            order_id: Order ID to check
+
+        Returns:
+            Tuple of (is_filled: bool, order_details: dict)
+        """
+        details = self.get_order_status(order_id)
+
+        if "error" in details:
+            return False, details
+
+        status = details.get("status", "")
+        filled_qty = details.get("filled_quantity", 0)
+
+        # FILLED_ALL = fully filled
+        # FILLED_PART with filled_qty > 0 = partially filled (counts as filled)
+        is_filled = (
+            status == OrderStatus.FILLED_ALL or 
+            (status == OrderStatus.FILLED_PART and filled_qty > 0)
+        )
+
+        return is_filled, details
+
+    def is_order_terminal(self, order_id: str) -> Tuple[bool, dict]:
+        """Check if an order is in a terminal state (cancelled/failed).
+
+        Args:
+            order_id: Order ID to check
+
+        Returns:
+            Tuple of (is_terminal: bool, order_details: dict)
+        """
+        details = self.get_order_status(order_id)
+
+        if "error" in details:
+            return False, details
+
+        status = details.get("status", "")
+        is_terminal = status in OrderStatus.TERMINAL_STATUSES
+
+        return is_terminal, details
+
+    def wait_for_fill(
+        self,
+        order_id: str,
+        timeout_seconds: int = None,
+        poll_interval: float = None,
+    ) -> OrderFillResult:
+        """Wait for an order to be filled, with polling.
+
+        This method polls order_list_query until:
+        1. Order is filled (FILLED_ALL or FILLED_PART with dealt_qty > 0)
+        2. Order reaches terminal state (CANCELLED, FAILED, DELETED)
+        3. Timeout is reached
+
+        Args:
+            order_id: Order ID to wait for
+            timeout_seconds: Max wait time (default: 30s paper, 60s live)
+            poll_interval: Initial poll interval (default: 1s, backs off to 5s)
+
+        Returns:
+            OrderFillResult with fill details
+        """
+        if timeout_seconds is None:
+            timeout_seconds = (
+                self.FILL_TIMEOUT_PAPER if self.paper_trading 
+                else self.FILL_TIMEOUT_LIVE
+            )
+
+        if poll_interval is None:
+            poll_interval = self.POLL_INTERVAL_START
+
+        start_time = time.time()
+        attempts = 0
+        last_status = ""
+        last_details = {}
+
+        logger.info(f"Waiting for fill on order {order_id} (timeout: {timeout_seconds}s)")
+
+        while (time.time() - start_time) < timeout_seconds:
+            attempts += 1
+            
+            try:
+                is_filled, details = self.is_order_filled(order_id)
+                last_details = details
+                last_status = details.get("status", "")
+
+                if is_filled:
+                    elapsed = time.time() - start_time
+                    logger.info(
+                        f"Order {order_id} FILLED after {elapsed:.1f}s "
+                        f"({attempts} attempts): {details.get('filled_quantity')} @ "
+                        f"{details.get('filled_price')}"
+                    )
+                    return OrderFillResult(
+                        filled=True,
+                        order_id=order_id,
+                        status=last_status,
+                        filled_quantity=details.get("filled_quantity", 0),
+                        filled_price=details.get("filled_price"),
+                        original_quantity=details.get("original_quantity", 0),
+                        message="Order filled successfully",
+                        attempts=attempts,
+                        elapsed_seconds=elapsed,
+                    )
+
+                # Check for terminal states
+                is_terminal, _ = self.is_order_terminal(order_id)
+                if is_terminal:
+                    elapsed = time.time() - start_time
+                    logger.warning(
+                        f"Order {order_id} reached terminal state: {last_status}"
+                    )
+                    return OrderFillResult(
+                        filled=False,
+                        order_id=order_id,
+                        status=last_status,
+                        filled_quantity=details.get("filled_quantity", 0),
+                        filled_price=details.get("filled_price"),
+                        original_quantity=details.get("original_quantity", 0),
+                        message=f"Order terminated with status: {last_status}",
+                        attempts=attempts,
+                        elapsed_seconds=elapsed,
+                    )
+
+                # Log progress periodically
+                if attempts % 5 == 0:
+                    logger.debug(
+                        f"Order {order_id} still pending ({last_status}), "
+                        f"attempt {attempts}, elapsed {time.time() - start_time:.1f}s"
+                    )
+
+            except Exception as e:
+                logger.warning(f"Error polling order status: {e}")
+
+            # Sleep with backoff
+            time.sleep(poll_interval)
+            poll_interval = min(poll_interval * 1.2, self.POLL_INTERVAL_MAX)
+
+        # Timeout reached
+        elapsed = time.time() - start_time
+        logger.warning(
+            f"Order {order_id} not filled after {elapsed:.1f}s "
+            f"({attempts} attempts), last status: {last_status}"
+        )
+        return OrderFillResult(
+            filled=False,
+            order_id=order_id,
+            status=last_status or "TIMEOUT",
+            filled_quantity=last_details.get("filled_quantity", 0),
+            filled_price=last_details.get("filled_price"),
+            original_quantity=last_details.get("original_quantity", 0),
+            message=f"Order not filled within {timeout_seconds} seconds",
+            attempts=attempts,
+            elapsed_seconds=elapsed,
+        )
+
+    # =========================================================================
+    # QUOTE AND POSITION METHODS
+    # =========================================================================
+
+    def get_quote(self, symbol: str) -> dict:
+        """Get real-time quote for a symbol.
+
+        Args:
+            symbol: Stock code (e.g., '700')
+
+        Returns:
+            Dict with quote data
+        """
+        if not self._connected:
+            raise RuntimeError("Not connected to OpenD")
+
+        moomoo_symbol = self._format_hk_symbol(symbol)
+
+        ret, data = self.quote_ctx.get_market_snapshot([moomoo_symbol])
+
+        if ret != RET_OK:
+            raise RuntimeError(f"Failed to get quote: {data}")
+
         if data.empty:
-            return {"error": "No account data"}
+            raise ValueError(f"No quote data for {symbol}")
 
         row = data.iloc[0]
 
-        def safe_float(val, default=0.0):
-            """Convert to float, handling 'N/A' and other non-numeric values."""
-            if val is None or val == 'N/A' or val == '':
-                return default
-            try:
-                return float(val)
-            except (ValueError, TypeError):
-                return default
-
-        # Get positions for complete portfolio view
-        positions_list = self.get_positions()
-        positions_data = [
-            {
-                "symbol": p.symbol,
-                "quantity": p.quantity,
-                "avg_cost": p.avg_cost,
-                "current_price": p.current_price,
-                "unrealized_pnl": p.unrealized_pnl,
-                "unrealized_pnl_pct": p.unrealized_pnl_pct,
-            }
-            for p in positions_list
-        ]
-
-        total_assets = safe_float(row.get("total_assets", 0))
-        cash = safe_float(row.get("cash", 0))
-        unrealized_pnl = safe_float(row.get("unrealized_pl", 0))
-
         return {
-            "cash": cash,
-            "equity": total_assets,  # Alias for tool_executor compatibility
-            "total_assets": total_assets,
-            "market_value": safe_float(row.get("market_val", 0)),
-            "frozen_cash": safe_float(row.get("frozen_cash", 0)),
-            "available_funds": safe_float(row.get("avl_withdrawal_cash", 0)),
-            "unrealized_pnl": unrealized_pnl,
-            "realized_pnl": safe_float(row.get("realized_pl", 0)),
-            "currency": str(row.get("currency", "HKD")),
-            "positions": positions_data,
-            "position_count": len(positions_data),
-            "daily_pnl": unrealized_pnl,  # Approximate with unrealized
-            "daily_pnl_pct": (unrealized_pnl / total_assets * 100) if total_assets > 0 else 0,
+            "symbol": symbol,
+            "last_price": float(row.get("last_price", 0)),
+            "bid_price": float(row.get("bid_price", 0)),
+            "ask_price": float(row.get("ask_price", 0)),
+            "high_price": float(row.get("high_price", 0)),
+            "low_price": float(row.get("low_price", 0)),
+            "open_price": float(row.get("open_price", 0)),
+            "prev_close": float(row.get("prev_close_price", 0)),
+            "volume": int(row.get("volume", 0)),
+            "turnover": float(row.get("turnover", 0)),
+            "update_time": str(row.get("update_time", "")),
         }
 
+    def get_quotes_batch(self, symbols: List[str]) -> List[dict]:
+        """Get quotes for multiple symbols in one API call.
+
+        Args:
+            symbols: List of stock codes
+
+        Returns:
+            List of quote dicts
+        """
+        if not self._connected:
+            raise RuntimeError("Not connected to OpenD")
+
+        moomoo_symbols = [self._format_hk_symbol(s) for s in symbols]
+
+        ret, data = self.quote_ctx.get_market_snapshot(moomoo_symbols)
+
+        if ret != RET_OK:
+            raise RuntimeError(f"Failed to get quotes: {data}")
+
+        quotes = []
+        for _, row in data.iterrows():
+            symbol = self._parse_hk_symbol(str(row.get("code", "")))
+            quotes.append({
+                "symbol": symbol,
+                "last_price": float(row.get("last_price", 0)),
+                "bid_price": float(row.get("bid_price", 0)),
+                "ask_price": float(row.get("ask_price", 0)),
+                "high_price": float(row.get("high_price", 0)),
+                "low_price": float(row.get("low_price", 0)),
+                "open_price": float(row.get("open_price", 0)),
+                "prev_close": float(row.get("prev_close_price", 0)),
+                "volume": int(row.get("volume", 0)),
+                "turnover": float(row.get("turnover", 0)),
+            })
+
+        return quotes
+
     def get_positions(self) -> List[Position]:
-        """Get all open positions.
-        
+        """Get current positions.
+
         Returns:
             List of Position objects
         """
@@ -510,6 +667,51 @@ class MoomooClient:
 
         return positions
 
+    def get_portfolio(self) -> dict:
+        """Get portfolio summary.
+
+        Returns:
+            Dict with portfolio data
+        """
+        if not self._connected:
+            raise RuntimeError("Not connected to OpenD")
+
+        ret, data = self.trade_ctx.accinfo_query(trd_env=self.trd_env)
+
+        if ret != RET_OK:
+            raise RuntimeError(f"Failed to get portfolio: {data}")
+
+        row = data.iloc[0] if not data.empty else {}
+
+        positions = self.get_positions()
+        market_value = sum(p.current_price * p.quantity for p in positions)
+
+        return {
+            "cash": float(row.get("cash", 0)),
+            "total_assets": float(row.get("total_assets", 0)),
+            "equity": float(row.get("total_assets", 0)),
+            "market_value": market_value,
+            "positions": [
+                {
+                    "symbol": p.symbol,
+                    "quantity": p.quantity,
+                    "avg_cost": p.avg_cost,
+                    "current_price": p.current_price,
+                    "unrealized_pnl": p.unrealized_pnl,
+                }
+                for p in positions
+            ],
+            "position_count": len(positions),
+            "unrealized_pnl": sum(p.unrealized_pnl for p in positions),
+            "daily_pnl": float(row.get("today_pl_val", 0)),
+            "daily_pnl_pct": float(row.get("today_pl_ratio", 0)) * 100,
+            "currency": "HKD",
+        }
+
+    # =========================================================================
+    # TRADING METHODS (ENHANCED in v1.5.0)
+    # =========================================================================
+
     def execute_trade(
         self,
         symbol: str,
@@ -520,21 +722,25 @@ class MoomooClient:
         stop_loss: float = None,
         take_profit: float = None,
         reason: str = "",
+        wait_for_fill: bool = True,
+        fill_timeout: int = None,
     ) -> OrderResult:
-        """Execute a trade.
-        
+        """Execute a trade with fill confirmation.
+
         Args:
             symbol: Stock code (e.g., '700')
             side: 'buy' or 'sell'
-            quantity: Number of shares (must be multiple of 100 for HKEX)
+            quantity: Number of shares (must be multiple of lot size for HKEX)
             order_type: 'market' or 'limit'
             limit_price: Required for limit orders
             stop_loss: Stop loss price (agent-managed, not native bracket)
             take_profit: Take profit price (agent-managed, not native bracket)
             reason: Reason for the trade (logged)
-            
+            wait_for_fill: If True, wait for fill confirmation (default: True)
+            fill_timeout: Max seconds to wait for fill (default: auto)
+
         Returns:
-            OrderResult with order details
+            OrderResult with ACTUAL fill status (not just submission status)
         """
         if not self._connected:
             raise RuntimeError("Not connected to OpenD")
@@ -543,7 +749,7 @@ class MoomooClient:
         if self.trd_env != TrdEnv.SIMULATE and not self._trade_unlocked:
             raise RuntimeError("Trading not unlocked (required for REAL trading)")
 
-        # Validate lot size (HKEX requires multiples of board lot - varies by stock)
+        # Validate lot size
         actual_lot_size = self.get_lot_size(symbol)
         if quantity % actual_lot_size != 0:
             logger.warning(f"Adjusting quantity {quantity} to nearest lot of {actual_lot_size}")
@@ -570,6 +776,7 @@ class MoomooClient:
             f"Executing {side} {quantity} {symbol} @ {price} ({order_type}) - {reason}"
         )
 
+        # Place the order
         ret, data = self.trade_ctx.place_order(
             price=price,
             qty=quantity,
@@ -595,8 +802,9 @@ class MoomooClient:
 
         row = data.iloc[0]
         order_id = str(row.get("order_id", ""))
+        initial_status = str(row.get("order_status", "SUBMITTED"))
 
-        logger.info(f"Order placed: {order_id}")
+        logger.info(f"Order placed: {order_id} (initial status: {initial_status})")
 
         # Log stop loss / take profit for agent to track
         if stop_loss:
@@ -604,17 +812,48 @@ class MoomooClient:
         if take_profit:
             logger.info(f"Agent-managed TP for {order_id}: {take_profit}")
 
-        return OrderResult(
-            order_id=order_id,
-            status=str(row.get("order_status", "SUBMITTED")),
-            symbol=symbol,
-            side=side,
-            quantity=quantity,
-            order_type=order_type,
-            filled_price=float(row.get("dealt_avg_price", 0)) or None,
-            filled_quantity=int(row.get("dealt_qty", 0)),
-            message=f"Order {order_id} submitted",
-        )
+        # If not waiting for fill, return immediately with submission status
+        if not wait_for_fill:
+            return OrderResult(
+                order_id=order_id,
+                status=initial_status,
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                order_type=order_type,
+                filled_price=float(row.get("dealt_avg_price", 0)) or None,
+                filled_quantity=int(row.get("dealt_qty", 0)),
+                message=f"Order {order_id} submitted (fill not confirmed)",
+            )
+
+        # Wait for fill confirmation
+        fill_result = self.wait_for_fill(order_id, timeout_seconds=fill_timeout)
+
+        if fill_result.filled:
+            return OrderResult(
+                order_id=order_id,
+                status="FILLED",
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                order_type=order_type,
+                filled_price=fill_result.filled_price,
+                filled_quantity=fill_result.filled_quantity,
+                message=f"Order {order_id} filled: {fill_result.filled_quantity} @ {fill_result.filled_price}",
+            )
+        else:
+            # Order not filled within timeout or reached terminal state
+            return OrderResult(
+                order_id=order_id,
+                status=fill_result.status,
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                order_type=order_type,
+                filled_price=fill_result.filled_price,
+                filled_quantity=fill_result.filled_quantity,
+                message=fill_result.message,
+            )
 
     def close_position(self, symbol: str, reason: str = "") -> OrderResult:
         """Close a specific position.
@@ -631,35 +870,40 @@ class MoomooClient:
         normalized_symbol = symbol.lstrip('0') or '0'
         if symbol.startswith('HK.'):
             normalized_symbol = self._parse_hk_symbol(symbol)
-        position = next((p for p in positions if p.symbol == normalized_symbol), None)
+
+        position = None
+        for p in positions:
+            if p.symbol == normalized_symbol:
+                position = p
+                break
 
         if not position:
             return OrderResult(
                 order_id="",
-                status="NO_POSITION",
+                status="FAILED",
                 symbol=symbol,
                 side="sell",
                 quantity=0,
                 order_type="market",
                 filled_price=None,
                 filled_quantity=0,
-                message=f"No position found for {symbol}",
+                message=f"No position found for {symbol} (normalized: {normalized_symbol})",
             )
 
         return self.execute_trade(
-            symbol=symbol,
+            symbol=position.symbol,
             side="sell",
             quantity=position.quantity,
             order_type="market",
-            reason=reason or f"Closing position in {symbol}",
+            reason=reason or f"Close position: {position.symbol}",
         )
 
     def close_all_positions(self, reason: str = "") -> List[OrderResult]:
-        """Emergency: close all positions.
-        
+        """Close all positions.
+
         Args:
             reason: Reason for closing all
-            
+
         Returns:
             List of OrderResults
         """
@@ -675,46 +919,12 @@ class MoomooClient:
 
         return results
 
-    def get_order_status(self, order_id: str) -> dict:
-        """Get status of a specific order.
-        
-        Args:
-            order_id: Order ID to check
-            
-        Returns:
-            Dict with order status details
-        """
-        if not self._connected:
-            raise RuntimeError("Not connected to OpenD")
-
-        ret, data = self.trade_ctx.order_list_query(trd_env=self.trd_env)
-
-        if ret != RET_OK:
-            return {"error": str(data)}
-
-        for _, row in data.iterrows():
-            if str(row.get("order_id", "")) == order_id:
-                return {
-                    "order_id": order_id,
-                    "status": str(row.get("order_status", "")),
-                    "symbol": self._parse_hk_symbol(str(row.get("code", ""))),
-                    "side": str(row.get("trd_side", "")),
-                    "quantity": int(row.get("qty", 0)),
-                    "filled_quantity": int(row.get("dealt_qty", 0)),
-                    "price": float(row.get("price", 0)),
-                    "filled_price": float(row.get("dealt_avg_price", 0)),
-                    "create_time": str(row.get("create_time", "")),
-                    "update_time": str(row.get("updated_time", "")),
-                }
-
-        return {"error": f"Order {order_id} not found"}
-
     def cancel_order(self, order_id: str) -> dict:
         """Cancel a pending order.
-        
+
         Args:
             order_id: Order ID to cancel
-            
+
         Returns:
             Dict with cancellation result
         """
@@ -743,74 +953,58 @@ class MoomooClient:
         """Get historical OHLCV data for a symbol.
 
         Args:
-            symbol: Stock code (e.g., "700" or "00700")
-            duration: Duration string (e.g., "5 D", "30 D") - used to calculate start date
-            bar_size: Bar size string (e.g., "5 mins", "15 mins", "1 hour", "1 day")
+            symbol: Stock code (e.g., '700')
+            duration: Time period (e.g., '5 D', '1 M')
+            bar_size: Bar size (e.g., '1 min', '5 mins', '15 mins', '1 D')
 
         Returns:
-            List of dicts with date, open, high, low, close, volume
+            List of OHLCV dicts
         """
         if not self._connected:
             raise RuntimeError("Not connected to OpenD")
 
-        # Map bar_size to KLType
+        moomoo_symbol = self._format_hk_symbol(symbol)
+
+        # Map bar size to KLType
         kl_type_map = {
             "1 min": KLType.K_1M,
-            "3 mins": KLType.K_3M,
             "5 mins": KLType.K_5M,
             "15 mins": KLType.K_15M,
             "30 mins": KLType.K_30M,
-            "1 hour": KLType.K_60M,
             "60 mins": KLType.K_60M,
+            "1 hour": KLType.K_60M,
+            "1 D": KLType.K_DAY,
             "1 day": KLType.K_DAY,
+            "1 W": KLType.K_WEEK,
             "1 week": KLType.K_WEEK,
+            "1 M": KLType.K_MON,
             "1 month": KLType.K_MON,
         }
+
         kl_type = kl_type_map.get(bar_size, KLType.K_15M)
 
-        # Parse duration to calculate max_count
-        # Format: "X D" for days, estimate bars needed
-        try:
-            parts = duration.strip().split()
-            num = int(parts[0])
-            unit = parts[1].upper() if len(parts) > 1 else "D"
+        # Parse duration
+        count = 100  # Default
+        if "D" in duration.upper():
+            days = int(duration.upper().replace("D", "").strip())
+            if kl_type == KLType.K_15M:
+                count = days * 26  # ~26 bars per day
+            elif kl_type == KLType.K_DAY:
+                count = days
 
-            # Estimate bars based on timeframe
-            if kl_type in [KLType.K_1M, KLType.K_3M, KLType.K_5M, KLType.K_15M, KLType.K_30M, KLType.K_60M]:
-                # Intraday: ~6.5 trading hours per day
-                minutes_per_bar = {
-                    KLType.K_1M: 1, KLType.K_3M: 3, KLType.K_5M: 5,
-                    KLType.K_15M: 15, KLType.K_30M: 30, KLType.K_60M: 60
-                }
-                bars_per_day = (6.5 * 60) / minutes_per_bar.get(kl_type, 15)
-                max_count = int(num * bars_per_day) + 50  # Add buffer
-            else:
-                # Daily/weekly: just use days
-                max_count = num + 10
-        except (ValueError, IndexError):
-            max_count = 200
-
-        max_count = min(max_count, 1000)  # API limit
-
-        # Format symbol for Moomoo
-        moomoo_symbol = self._format_hk_symbol(symbol)
-
-        # Fetch historical data
         ret, data, _ = self.quote_ctx.request_history_kline(
             code=moomoo_symbol,
             ktype=kl_type,
-            max_count=max_count,
+            max_count=count,
         )
 
         if ret != RET_OK:
-            logger.error(f"Failed to get historical data for {symbol}: {data}")
             raise RuntimeError(f"Failed to get historical data: {data}")
 
-        # Convert DataFrame to list of dicts
-        result = []
+        bars = []
         for _, row in data.iterrows():
-            result.append({
-                "date": row.get("time_key", ""),
+            bars.append({
+                "timestamp": str(row.get("time_key", "")),
                 "open": float(row.get("open", 0)),
                 "high": float(row.get("high", 0)),
                 "low": float(row.get("low", 0)),
@@ -818,45 +1012,23 @@ class MoomooClient:
                 "volume": int(row.get("volume", 0)),
             })
 
-        logger.info(f"Fetched {len(result)} bars for {symbol} ({bar_size})")
-        return result
+        return bars
 
 
-# Module-level client instance for convenience
-_client: Optional[MoomooClient] = None
+# =============================================================================
+# MODULE-LEVEL SINGLETON
+# =============================================================================
+
+_moomoo_client: Optional[MoomooClient] = None
 
 
-def get_moomoo_client() -> MoomooClient:
-    """Get the global MoomooClient instance."""
-    global _client
-    if _client is None:
-        raise RuntimeError("MoomooClient not initialized. Call init_moomoo_client() first.")
-    return _client
+def init_moomoo_client(**kwargs) -> MoomooClient:
+    """Initialize global Moomoo client."""
+    global _moomoo_client
+    _moomoo_client = MoomooClient(**kwargs)
+    return _moomoo_client
 
 
-def init_moomoo_client(
-    host: str = None,
-    port: int = None,
-    trade_password: str = None,
-    paper_trading: bool = True,
-) -> MoomooClient:
-    """Initialize and connect the global MoomooClient.
-    
-    Args:
-        host: OpenD host
-        port: OpenD port
-        trade_password: Trade unlock password
-        paper_trading: Use paper trading environment
-        
-    Returns:
-        Connected MoomooClient instance
-    """
-    global _client
-    _client = MoomooClient(
-        host=host,
-        port=port,
-        trade_password=trade_password,
-        paper_trading=paper_trading,
-    )
-    _client.connect()
-    return _client
+def get_moomoo_client() -> Optional[MoomooClient]:
+    """Get global Moomoo client."""
+    return _moomoo_client

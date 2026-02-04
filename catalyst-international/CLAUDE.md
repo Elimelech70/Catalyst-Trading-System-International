@@ -2,13 +2,22 @@
 
 **Name of Application**: Catalyst Trading System
 **Name of file**: CLAUDE.md
-**Version**: 3.9.0
-**Last Updated**: 2026-01-31
+**Version**: 3.10.0
+**Last Updated**: 2026-02-04
 **Purpose**: Complete operational guidelines for Claude Code on HKEX production system
 
 ---
 
 ## REVISION HISTORY
+
+**v3.10.0 (2026-02-04)** - ORDER FILL CONFIRMATION
+- Upgraded moomoo.py to v1.5.0 with wait_for_fill() support
+- Upgraded tool_executor.py to v3.2.0 with simplified fill handling
+- Orders now wait up to 30s (paper) / 60s (live) for fill confirmation
+- Positions ONLY created when broker confirms FILLED status
+- Eliminates phantom positions problem
+- Added terminal state detection (CANCELLED, FAILED, DELETED)
+- See: Documentation/Reports/implementation/order-fill-confirmation-implementation-4Feb2026.md
 
 **v3.9.0 (2026-01-31)** - POSITION SYNC FIX
 - Fixed order fill confirmation: polls order status for 5s after SUBMITTED
@@ -115,9 +124,9 @@
 | File | Version | Last Updated | Purpose |
 |------|---------|--------------|---------|
 | `unified_agent.py` | 3.0.0 | 2026-01-20 | Main agent with Claude AI loop + HKD limits + auto-sync |
-| `tool_executor.py` | 3.0.0 | 2026-01-31 | Tool routing + order fill polling + improved sync |
+| `tool_executor.py` | 3.2.0 | 2026-02-04 | Tool routing + simplified fill handling (uses moomoo.py wait_for_fill) |
 | `data/database.py` | 1.4.0 | 2026-01-31 | Database ops + update_position_quantity |
-| `brokers/moomoo.py` | 1.2.1 | 2026-01-06 | Moomoo client (portfolio fixes) |
+| `brokers/moomoo.py` | 1.5.0 | 2026-02-04 | Moomoo client + wait_for_fill() + terminal state detection |
 | `data/patterns.py` | 1.1.0 | 2026-01-06 | Relaxed pattern detection |
 | `data/market.py` | 2.3.0 | 2026-01-16 | Fixed volume_ratio calculation |
 | `data/news.py` | 1.0.0 | 2025-12-06 | News and sentiment |

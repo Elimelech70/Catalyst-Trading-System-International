@@ -1,11 +1,17 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: tool_executor.py
-Version: 3.1.0
-Last Updated: 2026-02-01
+Version: 3.2.0
+Last Updated: 2026-02-04
 Purpose: Routes Claude's tool calls to actual implementations
 
 REVISION HISTORY:
+v3.2.0 (2026-02-04) - Simplified fill confirmation
+- Removed redundant polling loop (moomoo.py v1.5.0 now handles fill confirmation)
+- Uses wait_for_fill=True parameter in broker.execute_trade()
+- Position only created when broker confirms FILLED status
+- Cleaner status handling and error reporting
+
 v3.1.0 (2026-02-01) - Cleanup & database logging
 - Removed alert_callback and email alerting
 - Replaced alert sending with structured logging
@@ -509,7 +515,7 @@ class ToolExecutor:
                     f"to fit HKD {max_position_value:,} limit (value: HKD {new_value:,.0f})"
                 )
 
-        # Execute via broker
+        # Execute via broker - moomoo.py v1.5.0 now handles fill confirmation
         result = self.broker.execute_trade(
             symbol=symbol,
             side=side,
@@ -519,6 +525,7 @@ class ToolExecutor:
             stop_loss=stop_loss,
             take_profit=take_profit,
             reason=reason,
+            wait_for_fill=True,  # NEW: Wait for fill confirmation (default 30s paper, 60s live)
         )
 
         # Handle OrderResult dataclass or dict
@@ -526,57 +533,24 @@ class ToolExecutor:
             status = result.status
             order_id = result.order_id
             fill_price = result.filled_price
+            filled_qty = result.filled_quantity
             message = result.message
         else:
             status = result.get("status", "")
             order_id = result.get("order_id", "")
             fill_price = result.get("filled_price") or result.get("fill_price")
+            filled_qty = result.get("filled_quantity", 0)
             message = result.get("message", "")
 
-        # Separate actually filled orders from just submitted orders
-        filled_statuses = ["Filled", "FILLED", "FILLED_ALL", "success"]
-        partial_filled_statuses = ["FILLED_PART"]
-        submitted_statuses = ["Submitted", "SUBMITTED", "SUBMITTING", "WAITING_SUBMIT"]
+        # Status checking - moomoo.py v1.5.0 returns actual fill status
+        is_filled = status == "FILLED"
+        is_partial = status == "FILLED_PART" and filled_qty > 0
+        is_failed = status in ["FAILED", "CANCELLED_ALL", "CANCELLED_PART", "TIMEOUT", "DELETED"]
 
-        is_filled = status in filled_statuses
-        is_partial = status in partial_filled_statuses
-        is_submitted = status in submitted_statuses
+        # Log the result
+        logger.info(f"Order {order_id} result: status={status}, filled_qty={filled_qty}, price={fill_price}")
 
-        # FIX: Poll for fill confirmation if order was submitted but not filled
-        # Paper trading orders typically fill within 1-2 seconds
-        if is_submitted and order_id:
-            import time
-            logger.info(f"Order {order_id} submitted, polling for fill confirmation...")
-            for attempt in range(5):  # Poll up to 5 times (5 seconds total)
-                time.sleep(1)
-                try:
-                    order_status = self.broker.get_order_status(order_id)
-                    current_status = order_status.get("status", "")
-                    filled_qty = order_status.get("filled_quantity", 0)
-
-                    if current_status in filled_statuses:
-                        logger.info(f"Order {order_id} confirmed FILLED after {attempt+1}s")
-                        is_filled = True
-                        is_submitted = False
-                        fill_price = order_status.get("filled_price") or fill_price
-                        break
-                    elif current_status in partial_filled_statuses:
-                        logger.info(f"Order {order_id} partially filled: {filled_qty} shares")
-                        is_partial = True
-                        is_submitted = False
-                        fill_price = order_status.get("filled_price") or fill_price
-                        break
-                    elif current_status in ["CANCELLED", "FAILED", "DELETED"]:
-                        logger.warning(f"Order {order_id} was {current_status}")
-                        is_submitted = False
-                        break
-                except Exception as e:
-                    logger.warning(f"Failed to poll order status: {e}")
-
-            if is_submitted:
-                logger.warning(f"Order {order_id} still not filled after 5s - will rely on auto-sync")
-
-        if is_filled or is_partial or is_submitted:
+        if is_filled or is_partial:
             # Only count as executed trade if actually filled
             if is_filled or is_partial:
                 self.trades_executed += 1
@@ -604,16 +578,10 @@ class ToolExecutor:
             try:
                 if is_filled:
                     db_status = "filled"
-                    db_filled_qty = quantity
-                elif is_partial:
+                    db_filled_qty = filled_qty if filled_qty else quantity
+                else:  # is_partial
                     db_status = "partial"
-                    # Use actual filled quantity from broker if available
-                    db_filled_qty = getattr(result, 'filled_quantity', 0) if hasattr(result, 'filled_quantity') else result.get('filled_quantity', 0) if isinstance(result, dict) else 0
-                    if not db_filled_qty:
-                        db_filled_qty = quantity  # Fallback
-                else:  # is_submitted
-                    db_status = "submitted"
-                    db_filled_qty = 0
+                    db_filled_qty = filled_qty if filled_qty else quantity
 
                 self.db.record_order(
                     symbol=symbol,
@@ -622,14 +590,10 @@ class ToolExecutor:
                     quantity=quantity,
                     limit_price=limit_price,
                     filled_quantity=db_filled_qty,
-                    filled_price=fill_price if (is_filled or is_partial) else None,
+                    filled_price=fill_price,
                     status=db_status,
                     broker_order_id=order_id,
                 )
-
-                # Log warning for submitted but not filled orders
-                if is_submitted:
-                    logger.warning(f"Order {order_id} for {symbol} submitted but NOT filled yet - monitor for fill confirmation")
 
             except Exception as e:
                 logger.error(f"Failed to record order: {e}")
@@ -720,13 +684,47 @@ class ToolExecutor:
                 "timestamp": datetime.now(HK_TZ).isoformat(),
             }
 
-        else:
+        elif is_failed:
+            # Order failed or was cancelled - do NOT create position
+            logger.warning(f"Order {order_id} failed: {status} - {message}")
+
+            # Record failed order for audit trail
+            try:
+                self.db.record_order(
+                    symbol=symbol,
+                    side=side,
+                    order_type=order_type.upper() if order_type else "MARKET",
+                    quantity=quantity,
+                    limit_price=limit_price,
+                    filled_quantity=0,
+                    filled_price=None,
+                    status=status.lower(),
+                    broker_order_id=order_id,
+                )
+            except Exception as e:
+                logger.error(f"Failed to record failed order: {e}")
+
             return {
                 "status": "failed",
-                "reason": message or str(result),
+                "order_id": order_id,
+                "reason": message or status,
                 "symbol": symbol,
                 "side": side,
                 "quantity": quantity,
+                "timestamp": datetime.now(HK_TZ).isoformat(),
+            }
+
+        else:
+            # Order submitted but not filled within timeout (rare with 30s timeout)
+            logger.warning(f"Order {order_id} not filled within timeout: {status}")
+            return {
+                "status": "pending",
+                "order_id": order_id,
+                "reason": message or f"Order pending: {status}",
+                "symbol": symbol,
+                "side": side,
+                "quantity": quantity,
+                "timestamp": datetime.now(HK_TZ).isoformat(),
             }
 
     def _close_position(self, inputs: dict) -> dict:
