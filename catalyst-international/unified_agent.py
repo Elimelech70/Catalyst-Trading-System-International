@@ -1,11 +1,18 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: unified_agent.py
-Version: 3.1.0
-Last Updated: 2026-01-20
+Version: 3.2.0
+Last Updated: 2026-02-01
 Purpose: Unified trading agent with Claude AI loop and workflow tracking
 
 REVISION HISTORY:
+v3.2.0 (2026-02-01) - CLEANUP & DATABASE LOGGING
+- Removed consciousness framework integration
+- Removed research_pool (now single trading DB)
+- Removed email/alert sending
+- Added database logging via db_logger.py
+- All logs now go to agent_logs table
+
 v3.1.0 (2026-01-20) - CRITICAL WORKFLOW FIXES
 - Fixed missing DECIDE phase mapping (check_risk now triggers DECIDE)
 - Fixed missing MONITOR phase trigger (after successful execute_trade)
@@ -24,7 +31,6 @@ v2.0.0 (2026-01-10) - Ecosystem restructure
 - Startup monitor integration
 - Position monitor integration (auto-start on BUY)
 - Config file support (YAML)
-- Consciousness integration
 - Pattern-based signal detection
 
 v1.0.0 (2026-01-05) - Initial unified agent
@@ -34,8 +40,8 @@ Single-agent architecture for HKEX trading. Handles:
 - Market scanning and opportunity detection via Claude AI
 - Entry decision making with tiered criteria
 - Position monitoring with pattern-based exits
-- Consciousness integration for memory and learning
 - Real-time workflow tracking with progress bar
+- Database logging for observability
 
 Usage:
     python unified_agent.py --mode trade --force
@@ -62,8 +68,8 @@ import anthropic
 
 from tools import TOOLS
 from tool_executor import create_tool_executor
-from alerts import create_alert_callback, get_alert_sender
 from data.database import get_database, init_database
+from db_logger import setup_db_logging, set_db_handler, get_db_handler
 
 # Local imports - adjust path as needed
 try:
@@ -152,8 +158,7 @@ WORKFLOW_PHASES = ["INIT", "PORTFOLIO", "SCAN", "ANALYZE", "DECIDE", "VALIDATE",
 class WorkflowTracker:
     """Track workflow phases in real-time.
 
-    Stores progress in the consciousness database for visibility
-    via MCP tools and web dashboard.
+    Stores progress in agent_logs table for observability.
     """
 
     def __init__(self, cycle_id: str, agent_id: str = "intl_claude"):
@@ -162,24 +167,14 @@ class WorkflowTracker:
         self.phases: List[Dict] = []
         self.current_phase: Optional[str] = None
         self.started_at = datetime.now(HK_TZ)
-        self._pool = None
 
     async def connect(self):
-        """Connect to consciousness database."""
-        if self._pool is None:
-            database_url = os.environ.get("RESEARCH_DATABASE_URL")
-            if database_url:
-                try:
-                    self._pool = await asyncpg.create_pool(database_url, min_size=1, max_size=2)
-                    logger.debug("WorkflowTracker connected to consciousness DB")
-                except Exception as e:
-                    logger.warning(f"Could not connect to consciousness DB: {e}")
+        """Initialize tracker (no separate DB connection needed)."""
+        logger.debug(f"WorkflowTracker initialized for cycle {self.cycle_id}")
 
     async def disconnect(self):
-        """Disconnect from database."""
-        if self._pool:
-            await self._pool.close()
-            self._pool = None
+        """Cleanup tracker."""
+        pass
 
     async def start_phase(self, phase: str, description: str = "", details: Dict[str, Any] = None):
         """Start a new workflow phase."""
@@ -240,33 +235,10 @@ class WorkflowTracker:
         await self._store_progress()
 
     async def _store_progress(self):
-        """Store current progress in consciousness database."""
-        if not self._pool:
-            await self.connect()
-
-        if not self._pool:
-            return
-
-        try:
-            progress = {
-                "cycle_id": self.cycle_id,
-                "agent_id": self.agent_id,
-                "started_at": self.started_at.isoformat(),
-                "current_phase": self.current_phase,
-                "phases": self.phases,
-                "updated_at": datetime.now(HK_TZ).isoformat()
-            }
-
-            async with self._pool.acquire() as conn:
-                # Store as observation with type 'workflow'
-                await conn.execute("""
-                    INSERT INTO claude_observations
-                    (agent_id, observation_type, content, tags)
-                    VALUES ($1, 'workflow', $2, $3)
-                """, self.agent_id, f"cycle:{self.cycle_id}", json.dumps(progress))
-
-        except Exception as e:
-            logger.debug(f"Could not store workflow progress: {e}")
+        """Log workflow progress (stored via db_logger)."""
+        # Progress is automatically logged via the standard logger
+        # which is connected to DatabaseLogHandler
+        pass
 
     def _print_progress_bar(self):
         """Print a visual progress bar to console."""
@@ -313,97 +285,23 @@ class WorkflowTracker:
 
 class Database:
     """Database connection manager."""
-    
-    def __init__(self, trading_url: str, research_url: str):
+
+    def __init__(self, trading_url: str):
         self.trading_url = trading_url
-        self.research_url = research_url
         self.trading_pool: Optional[asyncpg.Pool] = None
-        self.research_pool: Optional[asyncpg.Pool] = None
-    
+
     async def connect(self):
-        """Create connection pools."""
+        """Create connection pool."""
         self.trading_pool = await asyncpg.create_pool(
             self.trading_url, min_size=2, max_size=5
         )
-        self.research_pool = await asyncpg.create_pool(
-            self.research_url, min_size=1, max_size=3
-        )
-        logger.info("Database pools created")
-    
+        logger.info("Trading database pool created")
+
     async def close(self):
-        """Close connection pools."""
+        """Close connection pool."""
         if self.trading_pool:
             await self.trading_pool.close()
-        if self.research_pool:
-            await self.research_pool.close()
-        logger.info("Database pools closed")
-
-
-# =============================================================================
-# CONSCIOUSNESS INTEGRATION
-# =============================================================================
-
-class ConsciousnessClient:
-    """Interface to consciousness framework."""
-    
-    def __init__(self, pool: asyncpg.Pool, agent_id: str):
-        self.pool = pool
-        self.agent_id = agent_id
-    
-    async def wake_up(self) -> Dict[str, Any]:
-        """Mark agent as awake and get pending messages."""
-        async with self.pool.acquire() as conn:
-            # Update status (using research DB schema)
-            await conn.execute("""
-                UPDATE claude_state SET
-                    current_mode = 'awake',
-                    last_wake_at = NOW(),
-                    updated_at = NOW()
-                WHERE agent_id = $1
-            """, self.agent_id)
-            
-            # Get pending messages (using research DB schema)
-            messages = await conn.fetch("""
-                SELECT id, from_agent, subject, body, priority
-                FROM claude_messages
-                WHERE to_agent = $1 AND status = 'pending'
-                ORDER BY priority DESC, created_at
-            """, self.agent_id)
-
-            # Mark as read
-            if messages:
-                await conn.execute("""
-                    UPDATE claude_messages SET
-                        status = 'read',
-                        read_at = NOW()
-                    WHERE to_agent = $1 AND status = 'pending'
-                """, self.agent_id)
-            
-            return {
-                'agent_id': self.agent_id,
-                'messages': [dict(m) for m in messages]
-            }
-    
-    async def observe(self, category: str, content: str, metadata: Dict = None):
-        """Record an observation."""
-        async with self.pool.acquire() as conn:
-            # Using research DB schema - observation_type instead of category, tags instead of metadata
-            # Serialize metadata to JSON string for DB storage
-            tags_json = json.dumps(metadata) if metadata else '{}'
-            await conn.execute("""
-                INSERT INTO claude_observations (agent_id, observation_type, content, tags)
-                VALUES ($1, $2, $3, $4)
-            """, self.agent_id, category, content, tags_json)
-    
-    async def sleep(self):
-        """Mark agent as sleeping."""
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                UPDATE claude_state SET
-                    current_mode = 'sleeping',
-                    updated_at = NOW()
-                WHERE agent_id = $1
-            """, self.agent_id)
+        logger.info("Database pool closed")
 
 
 # =============================================================================
@@ -546,10 +444,10 @@ When you've completed all actions for this cycle, provide a summary of:
 class UnifiedAgent:
     """
     Unified trading agent for HKEX.
-    
-    Handles scanning, trading, monitoring, and consciousness.
+
+    Handles scanning, trading, and monitoring with database logging.
     """
-    
+
     def __init__(
         self,
         config: Dict[str, Any],
@@ -563,9 +461,8 @@ class UnifiedAgent:
         self.market_data = market_data
         self.anthropic = anthropic_client
         self.db = db
-        
+
         self.agent_id = config['agent']['id']
-        self.consciousness: Optional[ConsciousnessClient] = None
 
         # Claude API configuration
         claude_config = config.get('claude', {})
@@ -577,23 +474,28 @@ class UnifiedAgent:
         self.tracker: Optional[WorkflowTracker] = None
         self.cycle_id: Optional[str] = None
 
-        # Signal thresholds now loaded from config/exit_context.yaml (hot-reloadable)
+        # Database logging handler
+        self.db_log_handler = None
 
         logger.info(f"UnifiedAgent initialized: {self.agent_id}, model={self.model}")
-    
+
     async def initialize(self):
         """Initialize agent connections."""
         await self.db.connect()
-        
-        if self.db.research_pool:
-            self.consciousness = ConsciousnessClient(
-                self.db.research_pool, self.agent_id
-            )
-        
+
+        # Setup database logging (use URL, not pool - db_logger uses psycopg2)
+        self.db_log_handler = setup_db_logging(
+            self.db.trading_url,
+            'unified_agent',
+            level=logging.INFO
+        )
+        set_db_handler(self.db_log_handler)
+        logger.info("Database logging initialized")
+
         # Connect broker
         if self.broker:
             self.broker.connect()
-        
+
         logger.info("Agent initialized")
     
     async def shutdown(self):
@@ -605,14 +507,9 @@ class UnifiedAgent:
         if self.broker:
             self.broker.disconnect()
 
-        if self.consciousness:
-            await self.consciousness.sleep()
-
-        # Stop alert sender
-        try:
-            get_alert_sender().stop()
-        except Exception:
-            pass
+        # Stop database logging handler
+        if self.db_log_handler:
+            self.db_log_handler.stop()
 
         await self.db.close()
         logger.info("Agent shutdown complete")
@@ -626,33 +523,27 @@ class UnifiedAgent:
         logger.info("=" * 60)
         logger.info("RUNNING STARTUP RECONCILIATION")
         logger.info("=" * 60)
-        
-        # Wake up consciousness
-        if self.consciousness:
-            wake_result = await self.consciousness.wake_up()
-            if wake_result['messages']:
-                logger.info(f"Processing {len(wake_result['messages'])} messages")
-                for msg in wake_result['messages']:
-                    logger.info(f"  From {msg['from_agent']}: {msg['subject']}")
-        
+
         # Run reconciliation
         result = await run_startup_reconciliation()
-        
-        # Record observation
-        if self.consciousness:
-            await self.consciousness.observe(
-                category='system',
-                content=f"Startup reconciliation: {result['reconciliation']['positions_found']} positions, "
-                        f"{len(result['reconciliation']['monitors_started'])} monitors started",
-                metadata=result['reconciliation']
-            )
-        
+
+        # Log reconciliation result
+        logger.info(
+            f"Startup reconciliation: {result['reconciliation']['positions_found']} positions, "
+            f"{len(result['reconciliation']['monitors_started'])} monitors started",
+            extra={'context': result['reconciliation']}
+        )
+
         return result
     
     async def run_trade_cycle(self):
         """Run full trading cycle with Claude AI loop."""
         # Generate cycle ID
         self.cycle_id = f"hk_{datetime.now(HK_TZ).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+        # Set cycle_id for database logging correlation
+        if self.db_log_handler:
+            self.db_log_handler.set_cycle_id(self.cycle_id)
 
         # Initialize workflow tracker
         self.tracker = WorkflowTracker(self.cycle_id, self.agent_id)
@@ -667,14 +558,12 @@ class UnifiedAgent:
         # === PHASE 1: INIT ===
         await self.tracker.start_phase("INIT", "Agent initializing")
 
-        # Wake up consciousness
-        if self.consciousness:
-            await self.consciousness.wake_up()
-
         # Check market hours
         if not self._is_market_open():
             await self.tracker.complete_phase("INIT", status="skipped", reason="market_closed")
             await self.tracker.disconnect()
+            if self.db_log_handler:
+                self.db_log_handler.clear_cycle_id()
             logger.info("Market closed, skipping trade cycle")
             return {'status': 'skipped', 'reason': 'market_closed'}
 
@@ -685,11 +574,9 @@ class UnifiedAgent:
         except Exception as e:
             logger.warning(f"Could not start cycle in DB: {e}")
 
-        # Create tool executor
-        alert_callback = create_alert_callback()
+        # Create tool executor (no alert_callback needed)
         executor = create_tool_executor(
             cycle_id=self.cycle_id,
-            alert_callback=alert_callback,
             agent=self,
         )
 
@@ -714,13 +601,11 @@ class UnifiedAgent:
                 duration_sec=int((datetime.now(HK_TZ) - self.tracker.started_at).total_seconds())
             )
 
-        # Record consciousness observation
-        if self.consciousness:
-            await self.consciousness.observe(
-                category='trading',
-                content=f"Trade cycle {self.cycle_id}: {result.get('trades_executed', 0)} trades",
-                metadata={'cycle_id': self.cycle_id, **result}
-            )
+        # Log cycle completion
+        logger.info(
+            f"Trade cycle {self.cycle_id}: {result.get('trades_executed', 0)} trades",
+            extra={'context': {'cycle_id': self.cycle_id, **result}}
+        )
 
         # Print summary
         print("\n" + "=" * 60)
@@ -731,8 +616,10 @@ class UnifiedAgent:
         print(f"Total duration: {wf_summary['total_duration_ms']}ms")
         print(f"Errors: {wf_summary['errors']}")
 
-        # Disconnect tracker
+        # Disconnect tracker and clear cycle_id
         await self.tracker.disconnect()
+        if self.db_log_handler:
+            self.db_log_handler.clear_cycle_id()
 
         return result
     
@@ -741,37 +628,34 @@ class UnifiedAgent:
         logger.info("=" * 60)
         logger.info("RUNNING CLOSE CYCLE")
         logger.info("=" * 60)
-        
-        if self.consciousness:
-            await self.consciousness.wake_up()
-        
+
         portfolio = await self._get_portfolio()
         positions = portfolio.get('positions', [])
-        
+
         if not positions:
             logger.info("No open positions")
             return {'status': 'complete', 'positions_closed': 0}
-        
+
         # For lunch break or EOD, consider closing positions with weak patterns
         current_time = datetime.now(HK_TZ).time()
         is_lunch = time(11, 50) <= current_time < time(12, 10)
         is_eod = current_time >= time(15, 50)
-        
+
         closed = 0
         for pos in positions:
             # Get technicals for analysis
             technicals = self._get_technicals(pos['symbol'])
-            
+
             analysis = analyze_position(
                 position=pos,
                 quote={'price': pos.get('current_price', pos['entry_price'])},
                 technicals=technicals,
                 market="hkex"  # Thresholds loaded from config/exit_context.yaml
             )
-            
+
             should_close = False
             reason = ""
-            
+
             if is_eod:
                 # EOD - close unless very strong hold
                 if analysis.recommendation != "HOLD" or not any(
@@ -784,34 +668,25 @@ class UnifiedAgent:
                 if analysis.exit_signals:
                     should_close = True
                     reason = "Lunch break - weak pattern"
-            
+
             if should_close:
                 result = await self._close_position(pos, reason)
                 if result.get('success'):
                     closed += 1
-        
-        if self.consciousness:
-            await self.consciousness.observe(
-                category='trading',
-                content=f"Close cycle: {closed}/{len(positions)} positions closed",
-                metadata={'total': len(positions), 'closed': closed}
-            )
-        
+
+        # Log close cycle result
+        logger.info(
+            f"Close cycle: {closed}/{len(positions)} positions closed",
+            extra={'context': {'total': len(positions), 'closed': closed}}
+        )
+
         return {'status': 'complete', 'positions_closed': closed}
     
     async def run_heartbeat(self):
-        """Process messages and update status only."""
+        """Log heartbeat status."""
         logger.info("Running heartbeat")
-        
-        if self.consciousness:
-            wake_result = await self.consciousness.wake_up()
-            
-            for msg in wake_result.get('messages', []):
-                logger.info(f"Message from {msg['from_agent']}: {msg['subject']}")
-            
-            await self.consciousness.sleep()
-        
-        return {'status': 'complete', 'messages_processed': len(wake_result.get('messages', []))}
+        logger.info("Heartbeat complete - agent is alive")
+        return {'status': 'complete'}
     
     # =========================================================================
     # HELPER METHODS
@@ -1139,23 +1014,22 @@ Check for positions that should be closed based on:
 
 async def main(mode: str, config_path: Optional[str] = None):
     """Main entry point."""
-    
+
     # Load config
     config = load_config(config_path)
     agent_id = config['agent']['id']
-    
+
     logger.info(f"Starting {agent_id} in {mode} mode")
-    
-    # Get database URLs
+
+    # Get database URL
     trading_url = os.getenv("DATABASE_URL") or os.getenv("INTL_DATABASE_URL") or os.getenv("DEV_DATABASE_URL")
-    research_url = os.getenv("RESEARCH_DATABASE_URL")
-    
+
     if not trading_url:
         logger.error("No DATABASE_URL set")
         sys.exit(1)
-    
+
     # Create components
-    db = Database(trading_url, research_url)
+    db = Database(trading_url)
 
     # Initialize the synchronous database singleton (for tool_executor)
     init_database()

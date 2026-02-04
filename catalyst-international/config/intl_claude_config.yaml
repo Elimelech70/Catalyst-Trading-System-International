@@ -105,20 +105,6 @@ ai:
     exit: light
     analysis: medium  # Less deep than dev_claude
 
-# Consciousness Integration
-consciousness:
-  enabled: true
-  database: catalyst_research
-  
-  record_observations: true
-  record_learnings: true
-  process_messages: true
-  
-  siblings:
-    - big_bro
-    - dev_claude
-    - public_claude
-
 # Monitoring Configuration
 monitoring:
   check_interval_seconds: 300
@@ -129,10 +115,7 @@ monitoring:
 # Database Configuration
 database:
   trading_db: catalyst_intl
-  trading_url_env: INTL_DATABASE_URL
-  
-  consciousness_db: catalyst_research
-  consciousness_url_env: RESEARCH_DATABASE_URL
+  trading_url_env: DATABASE_URL
 
 # Cron Schedule (UTC)
 schedule:
@@ -158,12 +141,11 @@ schedule:
 logging:
   level: INFO
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  
+
   files:
     main: logs/intl_claude.log
     trades: logs/trades.log
-    consciousness: logs/consciousness.log
-  
+
   rotation:
     when: midnight
     backup_count: 30
@@ -173,8 +155,8 @@ features:
   position_monitoring: true
   pattern_detection: true
   news_filtering: true
-  consciousness_sync: true
-  
+  database_logging: true
+
   # No experimental features in production
   experimental:
     extended_hours_analysis: false
