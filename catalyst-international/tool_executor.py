@@ -1,11 +1,16 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: tool_executor.py
-Version: 3.2.0
-Last Updated: 2026-02-04
+Version: 3.3.0
+Last Updated: 2026-02-05
 Purpose: Routes Claude's tool calls to actual implementations
 
 REVISION HISTORY:
+v3.3.0 (2026-02-05) - Use centralized symbol normalization
+- Import normalize_symbol from brokers.moomoo
+- Replaced manual .replace().lstrip() in _close_position() with normalize_symbol()
+- Consistent symbol handling across entire codebase
+
 v3.2.0 (2026-02-04) - Simplified fill confirmation
 - Removed redundant polling loop (moomoo.py v1.5.0 now handles fill confirmation)
 - Uses wait_for_fill=True parameter in broker.execute_trade()
@@ -97,7 +102,7 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
-from brokers.moomoo import get_moomoo_client
+from brokers.moomoo import get_moomoo_client, normalize_symbol
 from data.database import get_database
 from data.market import get_market_data
 from data.news import get_news_client
@@ -740,9 +745,9 @@ class ToolExecutor:
         
         for pos in positions:
             pos_symbol = pos.symbol if hasattr(pos, 'symbol') else pos.get('symbol', '')
-            pos_symbol = str(pos_symbol).replace('.HK', '').replace('HK.', '').lstrip('0')
-            check_symbol = symbol.replace('.HK', '').replace('HK.', '').lstrip('0')
-            
+            pos_symbol = normalize_symbol(pos_symbol)
+            check_symbol = normalize_symbol(symbol)
+
             if pos_symbol == check_symbol:
                 position = pos
                 break

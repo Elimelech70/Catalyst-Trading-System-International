@@ -2,13 +2,22 @@
 
 **Name of Application**: Catalyst Trading System
 **Name of file**: CLAUDE.md
-**Version**: 3.10.0
-**Last Updated**: 2026-02-04
+**Version**: 3.11.0
+**Last Updated**: 2026-02-05
 **Purpose**: Complete operational guidelines for Claude Code on HKEX production system
 
 ---
 
 ## REVISION HISTORY
+
+**v3.11.0 (2026-02-05)** - SYMBOL NORMALIZATION
+- Added `normalize_symbol()` function to moomoo.py v1.6.0
+- Fixed `get_quotes_batch()` to return `Dict[str, dict]` instead of `List[dict]` (critical bug fix)
+- Updated market.py v2.4.0 to use normalized symbols for quote lookup
+- Added symbol normalization to database.py v1.5.0 (record_position, record_order)
+- Updated tool_executor.py v3.3.0 to use centralized normalize_symbol()
+- Eliminates phantom position mismatches (e.g., 0670 vs 670)
+- See: Documentation/Reports/implementation/symbol-normalization-implementation-plan-5Feb2026.md
 
 **v3.10.0 (2026-02-04)** - ORDER FILL CONFIRMATION
 - Upgraded moomoo.py to v1.5.0 with wait_for_fill() support
@@ -124,11 +133,11 @@
 | File | Version | Last Updated | Purpose |
 |------|---------|--------------|---------|
 | `unified_agent.py` | 3.0.0 | 2026-01-20 | Main agent with Claude AI loop + HKD limits + auto-sync |
-| `tool_executor.py` | 3.2.0 | 2026-02-04 | Tool routing + simplified fill handling (uses moomoo.py wait_for_fill) |
-| `data/database.py` | 1.4.0 | 2026-01-31 | Database ops + update_position_quantity |
-| `brokers/moomoo.py` | 1.5.0 | 2026-02-04 | Moomoo client + wait_for_fill() + terminal state detection |
+| `tool_executor.py` | 3.3.0 | 2026-02-05 | Tool routing + centralized normalize_symbol() |
+| `data/database.py` | 1.5.0 | 2026-02-05 | Database ops + symbol normalization |
+| `brokers/moomoo.py` | 1.6.0 | 2026-02-05 | Moomoo client + normalize_symbol() + Dict quotes |
 | `data/patterns.py` | 1.1.0 | 2026-01-06 | Relaxed pattern detection |
-| `data/market.py` | 2.3.0 | 2026-01-16 | Fixed volume_ratio calculation |
+| `data/market.py` | 2.4.0 | 2026-02-05 | Market data + symbol normalization fix |
 | `data/news.py` | 1.0.0 | 2025-12-06 | News and sentiment |
 | `position_monitor_service.py` | 1.0.1 | 2026-01-20 | Systemd service - fixed price key + execute_trade |
 | `tools.py` | - | 2026-01-20 | Tool schemas - added max_positions to get_portfolio |

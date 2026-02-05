@@ -2,8 +2,8 @@
 PostgreSQL database client for the Catalyst Trading Agent.
 
 Name of file: database.py
-Version: 1.4.0
-Last Updated: 2026-01-31
+Version: 1.5.0
+Last Updated: 2026-02-05
 
 This module handles all database operations including:
 - Agent cycle logging
@@ -12,6 +12,12 @@ This module handles all database operations including:
 - Trade history
 
 REVISION HISTORY:
+v1.5.0 (2026-02-05) - Symbol normalization
+- Added normalize_symbol import from brokers.moomoo
+- record_position() now normalizes symbol before storage
+- record_order() now normalizes symbol before storage
+- Ensures consistent symbol format in database (no leading zeros)
+
 v1.4.0 (2026-01-31) - Add update_position_quantity
 - Added update_position_quantity() for in-place quantity updates
 - Used by sync_positions_with_broker to avoid close+create cycle
@@ -44,6 +50,8 @@ from zoneinfo import ZoneInfo
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import ThreadedConnectionPool
+
+from brokers.moomoo import normalize_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -353,6 +361,8 @@ class DatabaseClient:
         reason: str,
     ) -> int:
         """Record a new position."""
+        # Normalize symbol to ensure consistent format (no leading zeros)
+        symbol = normalize_symbol(symbol)
         with self.get_cursor() as cur:
             # Get or create security
             cur.execute(
@@ -421,6 +431,8 @@ class DatabaseClient:
         Returns:
             Database order_id
         """
+        # Normalize symbol to ensure consistent format (no leading zeros)
+        symbol = normalize_symbol(symbol)
         with self.get_cursor() as cur:
             cur.execute(
                 """

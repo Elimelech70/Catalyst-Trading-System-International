@@ -2,8 +2,8 @@
 Market data and technical analysis for the Catalyst Trading Agent.
 
 Name of file: market.py
-Version: 2.3.0
-Last Updated: 2026-01-16
+Version: 2.4.0
+Last Updated: 2026-02-05
 
 This module provides:
 - Real-time quotes from Moomoo/Futu
@@ -12,6 +12,12 @@ This module provides:
 - Market scanning functionality
 
 REVISION HISTORY:
+v2.4.0 (2026-02-05) - Symbol normalization fix
+- Import normalize_symbol from brokers.moomoo
+- Updated scan_market() to use normalized symbols for quote lookup
+- get_quotes_batch() now returns Dict (fixed in moomoo.py v1.6.0)
+- Fixes critical bug where quotes_batch.get(symbol) failed on List
+
 v2.3.0 (2026-01-16) - Volume ratio fix
 - Fixed volume_ratio calculation in get_quote() to match scan_market()
 - Changed avg_volume fallback from `volume` to `volume // 2`
@@ -43,6 +49,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+
+from brokers.moomoo import normalize_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -391,7 +399,9 @@ class MarketData:
         candidates = []
         for symbol in symbols:
             try:
-                quote_data = quotes_batch.get(symbol)
+                # Normalize symbol to match dict keys (quotes_batch uses normalized symbols)
+                norm_symbol = normalize_symbol(symbol)
+                quote_data = quotes_batch.get(norm_symbol)
                 if not quote_data:
                     continue
 

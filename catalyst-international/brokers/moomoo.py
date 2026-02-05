@@ -1,11 +1,17 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: moomoo.py
-Version: 1.5.0
-Last Updated: 2026-02-04
+Version: 1.6.0
+Last Updated: 2026-02-05
 Purpose: Moomoo client for HKEX trading via OpenD gateway
 
 REVISION HISTORY:
+v1.6.0 (2026-02-05) - Symbol normalization
+- Added normalize_symbol() module-level function for consistent symbol formatting
+- Fixed get_quotes_batch() to return Dict[str, dict] instead of List[dict]
+- Updated _parse_hk_symbol() and close_position() to use normalize_symbol()
+- Eliminates phantom position mismatches (e.g., 0670 vs 670)
+
 v1.5.0 (2026-02-04) - Order fill confirmation
 - Added wait_for_fill() method to poll order status until filled
 - Added is_order_filled() helper method
@@ -92,6 +98,47 @@ from moomoo import (
 
 logger = logging.getLogger(__name__)
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
+
+
+# =============================================================================
+# SYMBOL NORMALIZATION
+# =============================================================================
+
+def normalize_symbol(symbol: str) -> str:
+    """
+    Normalize HKEX symbol to canonical format without leading zeros.
+
+    This function provides consistent symbol formatting across the entire
+    trading system, preventing mismatches like '0670' vs '670'.
+
+    Args:
+        symbol: Stock symbol in any format ('700', '0700', 'HK.00700', '700.HK')
+
+    Returns:
+        Normalized symbol without leading zeros (e.g., '700', '5')
+
+    Examples:
+        >>> normalize_symbol('0700')
+        '700'
+        >>> normalize_symbol('HK.00700')
+        '700'
+        >>> normalize_symbol('700.HK')
+        '700'
+        >>> normalize_symbol('5')
+        '5'
+        >>> normalize_symbol('0005')
+        '5'
+    """
+    if not symbol:
+        return symbol
+
+    s = str(symbol).upper()
+    # Remove exchange prefixes and suffixes
+    s = s.replace('HK.', '').replace('.HK', '')
+    # Strip leading zeros, but keep at least one digit
+    s = s.lstrip('0') or '0'
+
+    return s
 
 
 # =============================================================================
@@ -304,10 +351,7 @@ class MoomooClient:
         Returns:
             Simple code without leading zeros (e.g., '700')
         """
-        if moomoo_symbol.startswith("HK."):
-            code = moomoo_symbol[3:]
-            return code.lstrip("0") or "0"
-        return moomoo_symbol
+        return normalize_symbol(moomoo_symbol)
 
     def _round_to_tick(self, price: float) -> float:
         """Round price to valid HKEX tick size.
@@ -598,14 +642,15 @@ class MoomooClient:
             "update_time": str(row.get("update_time", "")),
         }
 
-    def get_quotes_batch(self, symbols: List[str]) -> List[dict]:
+    def get_quotes_batch(self, symbols: List[str]) -> dict[str, dict]:
         """Get quotes for multiple symbols in one API call.
 
         Args:
-            symbols: List of stock codes
+            symbols: List of stock codes (any format accepted)
 
         Returns:
-            List of quote dicts
+            Dict mapping normalized symbol to quote data.
+            Keys are normalized symbols (e.g., '700' not '0700').
         """
         if not self._connected:
             raise RuntimeError("Not connected to OpenD")
@@ -617,10 +662,10 @@ class MoomooClient:
         if ret != RET_OK:
             raise RuntimeError(f"Failed to get quotes: {data}")
 
-        quotes = []
+        quotes_dict = {}
         for _, row in data.iterrows():
             symbol = self._parse_hk_symbol(str(row.get("code", "")))
-            quotes.append({
+            quotes_dict[symbol] = {
                 "symbol": symbol,
                 "last_price": float(row.get("last_price", 0)),
                 "bid_price": float(row.get("bid_price", 0)),
@@ -631,9 +676,9 @@ class MoomooClient:
                 "prev_close": float(row.get("prev_close_price", 0)),
                 "volume": int(row.get("volume", 0)),
                 "turnover": float(row.get("turnover", 0)),
-            })
+            }
 
-        return quotes
+        return quotes_dict
 
     def get_positions(self) -> List[Position]:
         """Get current positions.
@@ -866,10 +911,8 @@ class MoomooClient:
             OrderResult with order details
         """
         positions = self.get_positions()
-        # Normalize input symbol to match position format (strip leading zeros)
-        normalized_symbol = symbol.lstrip('0') or '0'
-        if symbol.startswith('HK.'):
-            normalized_symbol = self._parse_hk_symbol(symbol)
+        # Normalize input symbol to match position format
+        normalized_symbol = normalize_symbol(symbol)
 
         position = None
         for p in positions:
