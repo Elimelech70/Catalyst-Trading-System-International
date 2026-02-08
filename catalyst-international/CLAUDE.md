@@ -2,13 +2,22 @@
 
 **Name of Application**: Catalyst Trading System
 **Name of file**: CLAUDE.md
-**Version**: 3.11.0
-**Last Updated**: 2026-02-05
+**Version**: 3.12.0
+**Last Updated**: 2026-02-07
 **Purpose**: Complete operational guidelines for Claude Code on HKEX production system
 
 ---
 
 ## REVISION HISTORY
+
+**v3.12.0 (2026-02-07)** - POSITION DEDUPLICATION
+- Cleaned up 11 duplicate open position rows in database
+- Added partial unique index `idx_positions_unique_open_symbol` on positions(symbol) WHERE status='open'
+- Upgraded database.py to v1.6.0: `record_position()` now upserts (checks for existing open position first)
+- Added `close_position_by_id()` to database.py for targeted position closure
+- Upgraded tool_executor.py to v3.4.0: `sync_positions_with_broker()` deduplicates DB rows before comparison
+- Normalized `side` to uppercase in `_execute_trade()`
+- See: Documentation/Reports/implementation/position-dedup-fix-7Feb2026.md
 
 **v3.11.0 (2026-02-05)** - SYMBOL NORMALIZATION
 - Added `normalize_symbol()` function to moomoo.py v1.6.0
@@ -133,8 +142,8 @@
 | File | Version | Last Updated | Purpose |
 |------|---------|--------------|---------|
 | `unified_agent.py` | 3.0.0 | 2026-01-20 | Main agent with Claude AI loop + HKD limits + auto-sync |
-| `tool_executor.py` | 3.3.0 | 2026-02-05 | Tool routing + centralized normalize_symbol() |
-| `data/database.py` | 1.5.0 | 2026-02-05 | Database ops + symbol normalization |
+| `tool_executor.py` | 3.4.0 | 2026-02-07 | Tool routing + sync dedup + side normalization |
+| `data/database.py` | 1.6.0 | 2026-02-07 | Database ops + position upsert + close_by_id |
 | `brokers/moomoo.py` | 1.6.0 | 2026-02-05 | Moomoo client + normalize_symbol() + Dict quotes |
 | `data/patterns.py` | 1.1.0 | 2026-01-06 | Relaxed pattern detection |
 | `data/market.py` | 2.4.0 | 2026-02-05 | Market data + symbol normalization fix |

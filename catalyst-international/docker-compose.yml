@@ -75,8 +75,8 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      MOOMOO_HOST: ${MOOMOO_HOST:-host.docker.internal}
-      MOOMOO_PORT: ${MOOMOO_PORT:-11111}
+      MOOMOO_HOST: host.docker.internal
+      MOOMOO_PORT: ${MOOMOO_DOCKER_PORT:-11112}
       MONITOR_CHECK_INTERVAL: ${MONITOR_CHECK_INTERVAL:-300}
       PORT: 8001
       TZ: Asia/Hong_Kong
@@ -103,8 +103,8 @@ services:
     ports:
       - "8002:8002"
     environment:
-      MOOMOO_HOST: ${MOOMOO_HOST:-host.docker.internal}
-      MOOMOO_PORT: ${MOOMOO_PORT:-11111}
+      MOOMOO_HOST: host.docker.internal
+      MOOMOO_PORT: ${MOOMOO_DOCKER_PORT:-11112}
       NEWSAPI_KEY: ${NEWSAPI_KEY:-}
       ALPHA_VANTAGE_API_KEY: ${ALPHA_VANTAGE_API_KEY:-}
       FINNHUB_API_KEY: ${FINNHUB_API_KEY:-}
@@ -140,8 +140,8 @@ services:
       DB_NAME: ${DB_NAME:-catalyst_intl}
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
-      MOOMOO_HOST: ${MOOMOO_HOST:-host.docker.internal}
-      MOOMOO_PORT: ${MOOMOO_PORT:-11111}
+      MOOMOO_HOST: host.docker.internal
+      MOOMOO_PORT: ${MOOMOO_DOCKER_PORT:-11112}
       MOOMOO_TRADE_PWD: ${MOOMOO_TRADE_PWD:-}
       PORT: 8003
       TZ: Asia/Hong_Kong
@@ -174,7 +174,7 @@ services:
         condition: service_healthy
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-sonnet-4-20250514}
+      CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-sonnet-4-5-20250929}
       FORCE_MARKET_OPEN: ${FORCE_MARKET_OPEN:-}
       TZ: Asia/Hong_Kong
     networks:
@@ -203,7 +203,7 @@ services:
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
       MOOMOO_HOST: ${MOOMOO_HOST:-host.docker.internal}
-      MOOMOO_PORT: ${MOOMOO_PORT:-11111}
+      MOOMOO_PORT: ${MOOMOO_DOCKER_PORT:-11112}
       ENVIRONMENT: ${ENVIRONMENT:-paper}
       TZ: Asia/Hong_Kong
     volumes:

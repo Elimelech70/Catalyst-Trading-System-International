@@ -68,9 +68,8 @@ def _get_broker():
     global _broker
     if _broker is None:
         from brokers.moomoo import init_moomoo_client, get_moomoo_client
-        try:
-            _broker = get_moomoo_client()
-        except RuntimeError:
+        _broker = get_moomoo_client()
+        if _broker is None:
             _broker = init_moomoo_client(paper_trading=True)
         if not _broker._connected:
             _broker.connect()
@@ -254,7 +253,7 @@ def _handle_execute_trade(args: dict) -> dict:
     safety = _get_safety()
 
     symbol = args["symbol"]
-    side = args["side"].upper()
+    side = args["side"].lower()
     quantity = args["quantity"]
     order_type = args.get("order_type", "MARKET")
     limit_price = args.get("limit_price")
@@ -398,7 +397,7 @@ def _handle_close_position(args: dict) -> dict:
         status = result.get("status", "")
         fill_price = result.get("filled_price") or result.get("fill_price")
 
-    if status in ["FILLED", "filled", "SUBMITTED", "submitted", "success", "NO_POSITION"]:
+    if status in ["FILLED", "filled", "success", "NO_POSITION"]:
         if fill_price:
             try:
                 db.close_position(symbol=symbol, exit_price=fill_price, reason=reason)
@@ -408,6 +407,13 @@ def _handle_close_position(args: dict) -> dict:
             "status": "success", "symbol": symbol, "quantity": quantity,
             "fill_price": fill_price, "reason": reason,
             "success": True, "timestamp": datetime.now(HK_TZ).isoformat(),
+        }
+    elif status in ["SUBMITTED", "submitted"]:
+        logger.warning(f"Close order for {symbol} submitted but not yet filled: {status}")
+        return {
+            "status": "pending", "symbol": symbol, "quantity": quantity,
+            "reason": f"Order submitted, awaiting fill confirmation: {message or status}",
+            "success": False, "timestamp": datetime.now(HK_TZ).isoformat(),
         }
     else:
         return {"status": "failed", "symbol": symbol, "reason": str(result), "success": False}
@@ -438,18 +444,27 @@ def _handle_sync_positions(args: dict) -> dict:
         broker_dict = {normalize_symbol(str(p.symbol)): p for p in broker_positions}
         broker_symbols = set(broker_dict.keys())
 
-        db_positions = db.get_positions()
+        # Query open positions directly (avoid JOIN miss for NULL security_id)
+        with db.get_cursor() as cur:
+            cur.execute(
+                "SELECT position_id, symbol, side, quantity, entry_price "
+                "FROM positions WHERE status = 'open' ORDER BY created_at"
+            )
+            db_positions = [dict(row) for row in cur.fetchall()]
+
+        # Group by normalized symbol, keep the newest (last in created_at order)
         db_dict = {}
         for p in db_positions:
             sym = normalize_symbol(str(p.get("symbol", "")))
             if sym in db_dict:
+                # Close the OLDER duplicate (already in dict), keep the newer one
+                older = db_dict[sym]
                 try:
-                    db.close_position_by_id(position_id=p["position_id"], reason="dedup: duplicate open row in sync")
-                    results["closed_phantoms"].append(f"{sym} (dedup id={p['position_id']})")
+                    db.close_position_by_id(position_id=older["position_id"], reason="dedup: duplicate open row in sync")
+                    results["closed_phantoms"].append(f"{sym} (dedup id={older['position_id']})")
                 except Exception as e:
                     results["errors"].append(f"Dedup {sym}: {e}")
-            else:
-                db_dict[sym] = p
+            db_dict[sym] = p  # Always keep the latest
         db_symbols = set(db_dict.keys())
 
         for symbol in db_symbols - broker_symbols:
@@ -464,7 +479,7 @@ def _handle_sync_positions(args: dict) -> dict:
                 pos = broker_dict[symbol]
                 entry = float(pos.avg_cost)
                 db.record_position(
-                    symbol=symbol, side="BUY", quantity=int(pos.quantity),
+                    symbol=symbol, side="buy", quantity=int(pos.quantity),
                     entry_price=entry, stop_loss=round(entry * 0.97, 2),
                     take_profit=round(entry * 1.06, 2),
                     broker_order_id="auto_sync", cycle_id=cycle_id,

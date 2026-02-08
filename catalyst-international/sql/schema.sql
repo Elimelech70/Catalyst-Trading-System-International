@@ -199,6 +199,10 @@ CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 CREATE INDEX IF NOT EXISTS idx_positions_symbol ON positions(symbol);
 CREATE INDEX IF NOT EXISTS idx_positions_entry_time ON positions(entry_time DESC);
 
+-- Prevent duplicate open positions for the same symbol (database-level safety net)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_unique_open_symbol
+  ON positions(symbol) WHERE status = 'open';
+
 -- =============================================================================
 -- PATTERNS
 -- =============================================================================

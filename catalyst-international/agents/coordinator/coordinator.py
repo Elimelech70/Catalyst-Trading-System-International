@@ -40,7 +40,7 @@ HK_TZ = ZoneInfo("Asia/Hong_Kong")
 POLL_INTERVAL = 60  # seconds between recommendation checks
 SCAN_INTERVAL = 1800  # 30 minutes between full scan cycles
 MAX_ITERATIONS_PER_CYCLE = 35
-MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5-20250929")
 MAX_TOKENS = 4096
 
 
@@ -73,10 +73,18 @@ class MCPConnection:
         logger.info(f"Connected to {self.name}: tools={tool_names}")
 
     async def disconnect(self):
-        if self.session:
-            await self.session.__aexit__(None, None, None)
-        if self._context:
-            await self._context.__aexit__(None, None, None)
+        try:
+            if self.session:
+                await self.session.__aexit__(None, None, None)
+        except Exception:
+            pass
+        try:
+            if self._context:
+                await self._context.__aexit__(None, None, None)
+        except Exception:
+            pass
+        self.session = None
+        self._context = None
         logger.info(f"Disconnected from {self.name}")
 
     async def call_tool(self, tool_name: str, arguments: dict = None) -> Any:
@@ -397,14 +405,19 @@ Begin by checking portfolio, then scan the market."""
                     logger.info(f"  Tool: {tool_name}({json.dumps(tool_input)[:100]})")
 
                     # Route through MCP
-                    server_name, mcp_tool = self._tool_map.get(tool_name, (None, None))
-                    if server_name:
-                        try:
-                            result = await self.hub.call(server_name, mcp_tool, tool_input)
-                        except Exception as e:
-                            result = {"error": str(e), "success": False}
+                    if tool_name == "send_alert":
+                        # Handle locally - not routed through MCP
+                        logger.info(f"ALERT [{tool_input.get('severity', 'info')}]: {tool_input.get('subject', '')} - {tool_input.get('message', '')}")
+                        result = {"sent": True, "success": True}
                     else:
-                        result = {"error": f"Unknown tool: {tool_name}", "success": False}
+                        server_name, mcp_tool = self._tool_map.get(tool_name, (None, None))
+                        if server_name:
+                            try:
+                                result = await self.hub.call(server_name, mcp_tool, tool_input)
+                            except Exception as e:
+                                result = {"error": str(e), "success": False}
+                        else:
+                            result = {"error": f"Unknown tool: {tool_name}", "success": False}
 
                     # Track trades
                     if tool_name == "execute_trade" and result.get("success"):
