@@ -121,9 +121,9 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "symbol": {"type": "string", "description": "HKEX stock symbol (e.g. '700')"},
-                    "side": {"type": "string", "enum": ["BUY", "SELL"]},
+                    "side": {"type": "string", "enum": ["buy", "sell", "BUY", "SELL"]},
                     "quantity": {"type": "integer", "description": "Number of shares"},
-                    "order_type": {"type": "string", "enum": ["MARKET", "LIMIT"], "default": "MARKET"},
+                    "order_type": {"type": "string", "enum": ["MARKET", "LIMIT", "market", "limit"], "default": "MARKET"},
                     "limit_price": {"type": "number", "description": "Limit price (required for LIMIT orders)"},
                     "stop_loss": {"type": "number", "description": "Stop loss price"},
                     "take_profit": {"type": "number", "description": "Take profit price"},
@@ -173,7 +173,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "symbol": {"type": "string"},
-                    "side": {"type": "string", "enum": ["BUY", "SELL"]},
+                    "side": {"type": "string", "enum": ["buy", "sell", "BUY", "SELL"]},
                     "quantity": {"type": "integer"},
                     "entry_price": {"type": "number"},
                     "stop_loss": {"type": "number"},
@@ -231,7 +231,7 @@ def _handle_get_portfolio(args: dict) -> dict:
         portfolio = vars(portfolio)
     config = _load_config()
     trading_cfg = config.get("trading", {})
-    max_positions = trading_cfg.get("max_positions", 5)
+    max_positions = trading_cfg.get("max_positions", 15)
     return {
         "cash": portfolio.get("cash", 0),
         "equity": portfolio.get("equity") or portfolio.get("total_assets", 0),
@@ -278,7 +278,9 @@ def _handle_execute_trade(args: dict) -> dict:
         position_value = quantity * current_price
         if position_value > max_position_value:
             max_qty = int(max_position_value / current_price)
-            lot_size = 10
+            lot_size = quote.get("lot_size", 100) if quote else 100
+            if lot_size <= 0:
+                lot_size = 100
             max_qty = max((max_qty // lot_size) * lot_size, lot_size)
             logger.info(f"Auto-adjusted qty {quantity} -> {max_qty} for HKD {max_position_value} limit")
             quantity = max_qty
@@ -410,6 +412,7 @@ def _handle_close_position(args: dict) -> dict:
         }
     elif status in ["SUBMITTED", "submitted"]:
         logger.warning(f"Close order for {symbol} submitted but not yet filled: {status}")
+        message = result.message if hasattr(result, "message") else result.get("message", "") if isinstance(result, dict) else ""
         return {
             "status": "pending", "symbol": symbol, "quantity": quantity,
             "reason": f"Order submitted, awaiting fill confirmation: {message or status}",

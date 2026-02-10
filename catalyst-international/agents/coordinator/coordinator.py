@@ -49,7 +49,10 @@ MAX_TOKENS = 4096
 # ============================================================================
 
 class MCPConnection:
-    """Manages connection to a single MCP server."""
+    """Manages connection to a single MCP server with auto-reconnect."""
+
+    MAX_RECONNECT_ATTEMPTS = 3
+    RECONNECT_DELAY = 5  # seconds
 
     def __init__(self, name: str, url: str):
         self.name = name
@@ -58,6 +61,7 @@ class MCPConnection:
         self._read_stream = None
         self._write_stream = None
         self._context = None
+        self._connected = False
 
     async def connect(self):
         """Connect to the MCP server."""
@@ -70,9 +74,11 @@ class MCPConnection:
         await self.session.initialize()
         tools = await self.session.list_tools()
         tool_names = [t.name for t in tools.tools]
+        self._connected = True
         logger.info(f"Connected to {self.name}: tools={tool_names}")
 
     async def disconnect(self):
+        self._connected = False
         try:
             if self.session:
                 await self.session.__aexit__(None, None, None)
@@ -87,19 +93,43 @@ class MCPConnection:
         self._context = None
         logger.info(f"Disconnected from {self.name}")
 
+    async def reconnect(self):
+        """Disconnect and reconnect to the MCP server."""
+        logger.warning(f"Reconnecting to {self.name}...")
+        await self.disconnect()
+        await self.connect()
+
     async def call_tool(self, tool_name: str, arguments: dict = None) -> Any:
-        """Call a tool on this MCP server."""
-        if not self.session:
-            raise RuntimeError(f"Not connected to {self.name}")
-        result = await self.session.call_tool(tool_name, arguments or {})
-        # Extract text content
-        if result.content and len(result.content) > 0:
-            text = result.content[0].text
+        """Call a tool on this MCP server, with auto-reconnect on failure."""
+        last_error = None
+        for attempt in range(self.MAX_RECONNECT_ATTEMPTS):
+            if not self._connected or not self.session:
+                try:
+                    await self.reconnect()
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"Reconnect to {self.name} failed (attempt {attempt + 1}): {e}")
+                    await asyncio.sleep(self.RECONNECT_DELAY)
+                    continue
+
             try:
-                return json.loads(text)
-            except json.JSONDecodeError:
-                return {"raw": text}
-        return {}
+                result = await self.session.call_tool(tool_name, arguments or {})
+                # Extract text content
+                if result.content and len(result.content) > 0:
+                    text = result.content[0].text
+                    try:
+                        return json.loads(text)
+                    except json.JSONDecodeError:
+                        return {"raw": text}
+                return {}
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Tool call {self.name}.{tool_name} failed (attempt {attempt + 1}): {e}")
+                self._connected = False
+                if attempt < self.MAX_RECONNECT_ATTEMPTS - 1:
+                    await asyncio.sleep(self.RECONNECT_DELAY)
+
+        raise RuntimeError(f"Failed to call {self.name}.{tool_name} after {self.MAX_RECONNECT_ATTEMPTS} attempts: {last_error}")
 
 
 class MCPHub:
