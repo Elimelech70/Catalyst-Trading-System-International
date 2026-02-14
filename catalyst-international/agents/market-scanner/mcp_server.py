@@ -47,9 +47,8 @@ def _get_broker():
     global _broker
     if _broker is None:
         from brokers.moomoo import init_moomoo_client, get_moomoo_client
-        try:
-            _broker = get_moomoo_client()
-        except RuntimeError:
+        _broker = get_moomoo_client()
+        if _broker is None:
             _broker = init_moomoo_client(paper_trading=True)
         if not _broker._connected:
             _broker.connect()

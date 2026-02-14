@@ -169,9 +169,8 @@ class BrokerReader:
     def connect(self) -> bool:
         try:
             from brokers.moomoo import init_moomoo_client, get_moomoo_client
-            try:
-                self.client = get_moomoo_client()
-            except RuntimeError:
+            self.client = get_moomoo_client()
+            if self.client is None:
                 self.client = init_moomoo_client(paper_trading=True)
             if not self.client._connected:
                 self.client.connect()

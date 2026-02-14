@@ -2,8 +2,8 @@
 PostgreSQL database client for the Catalyst Trading Agent.
 
 Name of file: database.py
-Version: 1.5.0
-Last Updated: 2026-02-05
+Version: 1.6.0
+Last Updated: 2026-02-07
 
 This module handles all database operations including:
 - Agent cycle logging
@@ -12,6 +12,13 @@ This module handles all database operations including:
 - Trade history
 
 REVISION HISTORY:
+v1.6.0 (2026-02-07) - Position deduplication
+- record_position() now checks for existing open position before INSERT (upsert)
+- If position exists for symbol, updates quantity and recalculates avg price
+- Added close_position_by_id() for targeted position closure
+- Prevents duplicate open positions at application level
+- Database also enforced via partial unique index on positions(symbol) WHERE status='open'
+
 v1.5.0 (2026-02-05) - Symbol normalization
 - Added normalize_symbol import from brokers.moomoo
 - record_position() now normalizes symbol before storage
@@ -360,9 +367,15 @@ class DatabaseClient:
         cycle_id: str,
         reason: str,
     ) -> int:
-        """Record a new position."""
-        # Normalize symbol to ensure consistent format (no leading zeros)
+        """Record a position (upsert: updates existing open position if found).
+
+        If an open position already exists for this symbol, the quantity is added
+        and the average entry price is recalculated. Otherwise a new row is inserted.
+        """
+        # Normalize symbol and side to ensure consistent format
         symbol = normalize_symbol(symbol)
+        side = side.lower()
+
         with self.get_cursor() as cur:
             # Get or create security
             cur.execute(
@@ -376,7 +389,47 @@ class DatabaseClient:
             )
             security_id = cur.fetchone()["security_id"]
 
-            # Create position
+            # Check for existing open position for this symbol
+            cur.execute(
+                """
+                SELECT p.position_id, p.quantity, p.entry_price
+                FROM positions p
+                JOIN securities s ON p.security_id = s.security_id
+                WHERE s.symbol = %s AND p.status = 'open'
+                LIMIT 1
+                """,
+                (symbol,),
+            )
+            existing = cur.fetchone()
+
+            if existing:
+                # Update existing position (add quantity, recalculate avg price)
+                old_qty = int(existing['quantity'])
+                old_price = float(existing['entry_price'])
+                new_qty = old_qty + quantity
+                new_avg = ((old_qty * old_price) + (quantity * entry_price)) / new_qty
+                cur.execute(
+                    """
+                    UPDATE positions SET quantity = %s, entry_price = %s,
+                      updated_at = NOW(),
+                      notes = COALESCE(notes, '') || %s
+                    WHERE position_id = %s RETURNING position_id
+                    """,
+                    (
+                        new_qty,
+                        round(new_avg, 4),
+                        f' | Added {quantity}@{entry_price} (order {broker_order_id})',
+                        existing['position_id'],
+                    ),
+                )
+                position_id = existing['position_id']
+                logger.info(
+                    f"Updated existing position {position_id}: {symbol} "
+                    f"qty {old_qty}->{new_qty}, avg {old_price:.4f}->{new_avg:.4f}"
+                )
+                return position_id
+
+            # No existing open position — INSERT new one
             cur.execute(
                 """
                 INSERT INTO positions (
@@ -494,6 +547,32 @@ class DatabaseClient:
                 (exit_price, datetime.now(HK_TZ), exit_price, exit_price, reason, symbol),
             )
             row = cur.fetchone()
+            return dict(row) if row else None
+
+    def close_position_by_id(
+        self,
+        position_id: int,
+        exit_price: float = 0,
+        reason: str = "",
+    ) -> dict | None:
+        """Close a specific position by its ID."""
+        with self.get_cursor() as cur:
+            cur.execute(
+                """
+                UPDATE positions SET
+                    status = 'closed',
+                    exit_price = %s,
+                    exit_time = %s,
+                    exit_reason = %s,
+                    notes = COALESCE(notes, '') || ' | Closed: ' || %s
+                WHERE position_id = %s AND status = 'open'
+                RETURNING *
+                """,
+                (exit_price, datetime.now(HK_TZ), reason, reason, position_id),
+            )
+            row = cur.fetchone()
+            if row:
+                logger.info(f"Closed position {position_id}: {reason}")
             return dict(row) if row else None
 
     def update_position_quantity(

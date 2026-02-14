@@ -1,11 +1,18 @@
 """
 Name of Application: Catalyst Trading System
 Name of file: tool_executor.py
-Version: 3.3.0
-Last Updated: 2026-02-05
+Version: 3.4.0
+Last Updated: 2026-02-07
 Purpose: Routes Claude's tool calls to actual implementations
 
 REVISION HISTORY:
+v3.4.0 (2026-02-07) - Position deduplication in sync
+- sync_positions_with_broker() now deduplicates DB positions before comparison
+- Closes duplicate open rows via close_position_by_id()
+- Normalizes symbols with normalize_symbol() during sync
+- Normalizes side to uppercase in _execute_trade()
+- Works with database.py v1.6.0 upsert logic to prevent future duplicates
+
 v3.3.0 (2026-02-05) - Use centralized symbol normalization
 - Import normalize_symbol from brokers.moomoo
 - Replaced manual .replace().lstrip() in _close_position() with normalize_symbol()
@@ -179,14 +186,29 @@ class ToolExecutor:
         }
 
         try:
-            # Get broker positions
+            # Get broker positions (normalize symbols)
             broker_positions = self.broker.get_positions()
-            broker_dict = {str(p.symbol): p for p in broker_positions}
+            broker_dict = {normalize_symbol(str(p.symbol)): p for p in broker_positions}
             broker_symbols = set(broker_dict.keys())
 
-            # Get DB positions
+            # Get DB positions — deduplicate first (close extra rows per symbol)
             db_positions = self.db.get_positions()
-            db_dict = {str(p.get('symbol')): p for p in db_positions}
+            db_dict = {}
+            for p in db_positions:
+                sym = normalize_symbol(str(p.get('symbol', '')))
+                if sym in db_dict:
+                    # Duplicate open row — close it
+                    try:
+                        self.db.close_position_by_id(
+                            position_id=p['position_id'],
+                            reason='dedup: duplicate open row in sync'
+                        )
+                        results["closed_phantoms"].append(f"{sym} (dedup id={p['position_id']})")
+                        logger.info(f"Auto-sync: closed duplicate DB position {sym} id={p['position_id']}")
+                    except Exception as e:
+                        results["errors"].append(f"Failed to dedup {sym}: {e}")
+                else:
+                    db_dict[sym] = p
             db_symbols = set(db_dict.keys())
 
             # Close phantom positions (in DB but not in broker)
@@ -483,7 +505,7 @@ class ToolExecutor:
     def _execute_trade(self, inputs: dict) -> dict:
         """Execute a trade with optional position monitoring."""
         symbol = inputs["symbol"]
-        side = inputs["side"]
+        side = inputs["side"].upper()  # Normalize side casing
         quantity = inputs["quantity"]
         order_type = inputs["order_type"]
         limit_price = inputs.get("limit_price")
