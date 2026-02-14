@@ -363,6 +363,29 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_time ON market_snapshots(timestamp DESC
 CREATE INDEX IF NOT EXISTS idx_snapshots_security ON market_snapshots(security_id);
 
 -- =============================================================================
+-- SIGNALS (Nervous System - v2.0.0)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS signals (
+    id SERIAL PRIMARY KEY,
+    severity VARCHAR(10) NOT NULL CHECK (severity IN ('CRITICAL','WARNING','INFO','OBSERVE')),
+    domain VARCHAR(12) NOT NULL CHECK (domain IN ('HEALTH','TRADING','RISK','LEARNING','DIRECTION','LIFECYCLE')),
+    scope VARCHAR(50) NOT NULL,
+    source VARCHAR(50) NOT NULL,
+    content TEXT NOT NULL,
+    data JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    expires_at TIMESTAMPTZ,
+    acknowledged_by JSONB DEFAULT '[]'::jsonb,
+    response_required BOOLEAN DEFAULT FALSE,
+    resolved BOOLEAN DEFAULT FALSE
+);
+
+CREATE INDEX IF NOT EXISTS idx_signals_active ON signals(resolved, expires_at);
+CREATE INDEX IF NOT EXISTS idx_signals_severity ON signals(severity);
+CREATE INDEX IF NOT EXISTS idx_signals_created ON signals(created_at DESC);
+
+-- =============================================================================
 -- HELPER FUNCTIONS
 -- =============================================================================
 

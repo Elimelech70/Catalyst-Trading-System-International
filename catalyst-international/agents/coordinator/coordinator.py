@@ -2,14 +2,15 @@
 Coordinator Agent - The Brain
 
 Continuously running Claude agent that connects to all 3 MCP servers
-and orchestrates the trading workflow. Replaces unified_agent.py.
+and orchestrates the trading workflow.
 
-Behavior loop:
-  1. Poll position monitor for exit recommendations (every 60s)
-  2. Every 30 min: run full scan cycle
-  3. Sleep, repeat
+Brain Components (run in order each cycle):
+  1. Survival Pulse - verify organ health
+  2. Discipline Gate - check for stagnation
+  3. Decision Engine - Claude AI tool-use loop
+  4. Memory Manager - log cycle outcomes
 
-Version: 1.0.0
+Version: 2.0.0
 """
 
 import asyncio
@@ -26,7 +27,9 @@ import anthropic
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 
-from system_prompt import SYSTEM_PROMPT
+from system_prompt import build_system_prompt
+from health import SurvivalPulse
+from discipline import DisciplineGate
 
 logging.basicConfig(
     level=logging.INFO,
@@ -169,16 +172,9 @@ class MCPHub:
 # Tool adapter for Claude API
 # ============================================================================
 
-def build_claude_tools(hub: MCPHub) -> List[dict]:
-    """Build Claude API tool definitions from all MCP servers.
-
-    Prefixes tool names with server name to avoid collisions:
-    e.g., 'position-monitor__get_exit_recommendations'
-    """
-    tools = []
-    # Define tools manually to match the plan exactly.
-    # This maps Claude tool names -> (mcp_server, mcp_tool_name)
-    tool_map = {
+def build_tool_map() -> Dict[str, tuple]:
+    """Maps Claude tool names -> (mcp_server, mcp_tool_name)."""
+    return {
         # Position Monitor
         "get_exit_recommendations": ("position-monitor", "get_exit_recommendations"),
         "get_position_health": ("position-monitor", "get_position_health"),
@@ -197,8 +193,10 @@ def build_claude_tools(hub: MCPHub) -> List[dict]:
         "sync_positions": ("trade-executor", "sync_positions"),
         "check_risk": ("trade-executor", "check_risk"),
         "log_decision": ("trade-executor", "log_decision"),
+        "get_last_trade_date": ("trade-executor", "get_last_trade_date"),
+        "publish_signal": ("trade-executor", "publish_signal"),
+        "get_signals": ("trade-executor", "get_signals"),
     }
-    return tool_map
 
 
 # ============================================================================
@@ -207,8 +205,10 @@ def build_claude_tools(hub: MCPHub) -> List[dict]:
 
 class Coordinator:
     """
-    The Brain. Continuously running coordinator that connects to all
-    MCP agents and orchestrates trading decisions.
+    The Brain. Composed of components:
+      - Survival Pulse (brainstem)
+      - Discipline Gate (limbic)
+      - Decision Engine (prefrontal cortex / Claude AI)
     """
 
     def __init__(self, mcp_config: dict):
@@ -217,15 +217,19 @@ class Coordinator:
         self.running = True
         self.last_scan_time: Optional[datetime] = None
 
-        # We reuse the existing tools.py TOOLS for Claude API schema
-        # but route calls through MCP
-        self._tool_map = build_claude_tools(self.hub)
+        # Tool routing map
+        self._tool_map = build_tool_map()
+
+        # Brain components
+        self.survival = SurvivalPulse()
+        self.discipline = DisciplineGate()
 
     async def start(self):
         """Start the coordinator."""
         logger.info("=" * 60)
-        logger.info("Coordinator Agent Starting")
+        logger.info("BRAIN STARTING - Coordinator v2.0.0")
         logger.info(f"Model: {MODEL}")
+        logger.info("Components: Survival Pulse, Discipline Gate, Decision Engine")
         logger.info("=" * 60)
 
         await self.hub.connect_all()
@@ -290,7 +294,6 @@ class Coordinator:
             action_taken = "held"
 
             if recommendation == "EXIT":
-                # Execute close immediately
                 try:
                     result = await self.hub.call("trade-executor", "close_position", {
                         "symbol": symbol,
@@ -307,10 +310,8 @@ class Coordinator:
                     action_taken = "error"
 
             elif recommendation == "CONSULT_AI":
-                # Get more data and let Claude decide
                 action_taken = await self._consult_on_position(rec)
 
-            # Acknowledge the recommendation
             try:
                 await self.hub.call("position-monitor", "acknowledge_recommendation", {
                     "monitor_id": monitor_id,
@@ -323,7 +324,6 @@ class Coordinator:
         """Use Claude to decide on a CONSULT_AI recommendation."""
         symbol = rec["symbol"]
 
-        # Gather data
         try:
             quote_data = await self.hub.call("market-scanner", "get_quote", {"symbol": symbol})
             tech_data = await self.hub.call("market-scanner", "get_technicals", {"symbol": symbol})
@@ -368,19 +368,131 @@ Should I CLOSE this position or HOLD? Reply with just CLOSE or HOLD on the first
             logger.error(f"AI consultation failed: {e}")
             return "held"
 
-    # ----- Full scan cycle -----
+    # ----- Brain component: get portfolio for discipline -----
+
+    async def _get_portfolio(self) -> dict:
+        """Get portfolio data from trade-executor."""
+        try:
+            return await self.hub.call("trade-executor", "get_portfolio")
+        except Exception as e:
+            logger.error(f"Failed to get portfolio: {e}")
+            return {"cash": 0, "equity": 0, "position_count": 0, "max_positions": 15}
+
+    async def _publish_signal(self, severity: str, domain: str, scope: str, content: str):
+        """Publish a signal to the nervous system via trade-executor."""
+        try:
+            await self.hub.call("trade-executor", "publish_signal", {
+                "severity": severity,
+                "domain": domain,
+                "scope": scope,
+                "content": content,
+            })
+        except Exception as e:
+            logger.warning(f"Failed to publish signal: {e}")
+
+    async def _get_last_trade_date(self) -> Optional[datetime]:
+        """Get last trade date from trade-executor for discipline checking."""
+        try:
+            result = await self.hub.call("trade-executor", "get_last_trade_date")
+            date_str = result.get("last_trade_date")
+            if date_str:
+                return datetime.fromisoformat(date_str.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception as e:
+            logger.warning(f"Failed to get last trade date: {e}")
+        return None
+
+    # ----- Full scan cycle with brain components -----
 
     async def _run_scan_cycle(self):
-        """Run a full scan cycle using Claude AI loop."""
+        """
+        One brain cycle. Components execute in order:
+        Survival -> Discipline -> Decision Engine
+        """
         self.last_scan_time = datetime.now(HK_TZ)
         logger.info("=" * 60)
-        logger.info(f"SCAN CYCLE - {self.last_scan_time.strftime('%H:%M:%S %Z')}")
+        logger.info(f"BRAIN CYCLE - {self.last_scan_time.strftime('%H:%M:%S %Z')}")
         logger.info("=" * 60)
+
+        # ==============================================================
+        # COMPONENT 1: SURVIVAL PULSE (Brainstem)
+        # Am I alive? Can my organs see?
+        # ==============================================================
+        logger.info("BRAIN: Running Survival Pulse...")
+        health = await self.survival.pulse(self.hub)
+
+        logger.info(
+            f"BRAIN: Survival -- Score {health['score']}/{health['max_score']}, "
+            f"{'healthy' if health['healthy'] else 'DEGRADED' if health['degraded'] else 'DEAD'}"
+        )
+
+        if health["dead"]:
+            logger.error("BRAIN: All organs down. Cannot operate. Sleeping.")
+            logger.error(self.survival.format_alert())
+            return {"tools_called": 0, "trades_executed": 0, "status": "dead"}
+
+        health_context = self.survival.get_context_for_decision_engine(health)
+
+        if health["pain_signals"]:
+            logger.warning(self.survival.format_alert())
+            await self._publish_signal(
+                "CRITICAL" if health["dead"] else "WARNING",
+                "HEALTH", "BROADCAST",
+                self.survival.format_alert(),
+            )
+
+        # ==============================================================
+        # COMPONENT 2: DISCIPLINE GATE (Limbic system)
+        # Am I being faithful with what I've been given?
+        # ==============================================================
+        logger.info("BRAIN: Running Discipline Gate...")
+        portfolio = await self._get_portfolio()
+        last_trade = await self._get_last_trade_date()
+
+        discipline = self.discipline.check(
+            cash=portfolio.get("cash", 0),
+            total_capital=portfolio.get("equity", 0) or portfolio.get("cash", 0),
+            open_positions=portfolio.get("position_count", 0),
+            max_positions=portfolio.get("max_positions", 15),
+            last_trade_time=last_trade,
+        )
+
+        discipline_context = discipline["context_for_decision_engine"]
+
+        logger.info(
+            f"BRAIN: Discipline -- {discipline['level']}, "
+            f"{discipline['days_idle']}d idle, "
+            f"{discipline['capital_utilisation']:.1%} deployed, "
+            f"{discipline['consecutive_passes']} consecutive passes"
+        )
+
+        if discipline["level"] in ("ALARM", "WARNING"):
+            logger.warning(self.discipline.format_alert(discipline))
+            await self._publish_signal(
+                "CRITICAL" if discipline["level"] == "ALARM" else "WARNING",
+                "TRADING", "BROADCAST",
+                self.discipline.format_alert(discipline),
+            )
+
+        # ==============================================================
+        # COMPONENT 3: DECISION ENGINE (Prefrontal cortex)
+        # The Claude AI call — evaluate and decide
+        # ==============================================================
+        logger.info("BRAIN: Running Decision Engine...")
+
+        # Build system prompt with full component context
+        system_prompt = build_system_prompt(
+            health_context=health_context,
+            discipline_context=discipline_context,
+            degraded_mode=health["degraded"],
+            available_tools=health["available_tools"],
+        )
 
         context = f"""## Trading Cycle Context
 
 **Date/Time**: {datetime.now(HK_TZ).strftime('%Y-%m-%d %H:%M:%S')} HKT
 **Mode**: Paper Trading (Multi-Agent MCP Architecture)
+**Health**: {health['score']}/{health['max_score']} organs functional
+**Discipline**: {discipline['level']} ({discipline['days_idle']}d idle, {discipline['capital_utilisation']:.1%} deployed)
 
 ## Your Task
 Execute your trading strategy for this cycle:
@@ -405,6 +517,9 @@ Begin by checking portfolio, then scan the market."""
             logger.warning("Could not import TOOLS from tools.py, using empty tools")
             TOOLS = []
 
+        # Filter tools based on health status
+        active_tools = self._filter_tools_by_health(TOOLS, health)
+
         try:
             for iteration in range(MAX_ITERATIONS_PER_CYCLE):
                 logger.info(f"Iteration {iteration + 1}/{MAX_ITERATIONS_PER_CYCLE}")
@@ -412,8 +527,8 @@ Begin by checking portfolio, then scan the market."""
                 response = self.anthropic.messages.create(
                     model=MODEL,
                     max_tokens=MAX_TOKENS,
-                    system=SYSTEM_PROMPT,
-                    tools=TOOLS,
+                    system=system_prompt,
+                    tools=active_tools,
                     messages=messages,
                 )
 
@@ -436,7 +551,6 @@ Begin by checking portfolio, then scan the market."""
 
                     # Route through MCP
                     if tool_name == "send_alert":
-                        # Handle locally - not routed through MCP
                         logger.info(f"ALERT [{tool_input.get('severity', 'info')}]: {tool_input.get('subject', '')} - {tool_input.get('message', '')}")
                         result = {"sent": True, "success": True}
                     else:
@@ -452,6 +566,7 @@ Begin by checking portfolio, then scan the market."""
                     # Track trades
                     if tool_name == "execute_trade" and result.get("success"):
                         trades_executed += 1
+                        self.discipline.record_trade()
 
                     tool_results.append({
                         "type": "tool_result",
@@ -467,8 +582,52 @@ Begin by checking portfolio, then scan the market."""
         except Exception as e:
             logger.error(f"Scan cycle error: {e}", exc_info=True)
 
-        logger.info(f"Scan cycle complete: {tools_called} tools, {trades_executed} trades")
+        # Record pass/trade for discipline tracking
+        if trades_executed == 0:
+            self.discipline.record_pass()
+
+        logger.info(f"BRAIN CYCLE COMPLETE: {tools_called} tools, {trades_executed} trades")
         return {"tools_called": tools_called, "trades_executed": trades_executed}
+
+    def _filter_tools_by_health(self, tools: list, health: dict) -> list:
+        """
+        Only give the Decision Engine tools whose underlying organ is working.
+        Don't hand the brain broken instruments.
+        """
+        if health["healthy"] or not tools:
+            return tools
+
+        # Map tool names to the health-checked dependency
+        tool_health_map = {
+            "scan_market": "get_quote",
+            "get_quote": "get_quote",
+            "get_technicals": "get_technicals",
+            "detect_patterns": "get_technicals",
+            "get_news": None,  # Always available
+            "execute_trade": "check_risk",
+            "check_risk": "check_risk",
+            "get_portfolio": None,
+            "close_position": None,
+            "close_all": None,
+            "get_exit_recommendations": None,
+            "get_position_health": None,
+            "acknowledge_recommendation": None,
+            "sync_positions": None,
+            "log_decision": None,
+            "send_alert": None,
+        }
+
+        available = health["available_tools"]
+        filtered = []
+        for tool in tools:
+            tool_name = tool.get("name", "")
+            dep = tool_health_map.get(tool_name)
+            if dep is None or dep in available:
+                filtered.append(tool)
+            else:
+                logger.info(f"BRAIN: Withholding tool '{tool_name}' -- dependency '{dep}' is broken")
+
+        return filtered
 
     # ----- Main loop -----
 
@@ -479,10 +638,9 @@ Begin by checking portfolio, then scan the market."""
         while self.running:
             try:
                 if not self._is_market_open():
-                    # Sleep until market opens
                     now = datetime.now(HK_TZ)
                     logger.info(f"Market closed ({now.strftime('%H:%M')} HKT). Sleeping...")
-                    await asyncio.sleep(300)  # Check every 5 min
+                    await asyncio.sleep(300)
                     continue
 
                 # Priority 1: Handle exit recommendations

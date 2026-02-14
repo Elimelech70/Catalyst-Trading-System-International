@@ -10,6 +10,15 @@
 
 ## REVISION HISTORY
 
+**v3.13.0 (2026-02-14)** - SURVIVAL ARCHITECTURE (Crawl Phase)
+- Full trading analysis revealed 3-day bleed-out (Feb 11-13): zero trades despite HKD 994K cash
+- Root cause: `KeyError: 'date'` in market.py broke all technicals/patterns silently
+- Implementing big_bro's 7-phase guide: senses → survival pulse → discipline → prompt → lifecycle → signals → memory
+- See: Documentation/Implementation/little bro - better implementation.zip (implementation guide)
+- See: Documentation/Implementation/catalyst-implementation-principles.md (principles)
+- See: Documentation/Implementation/catalyst-consciousness-architecture-v3.md (architecture)
+- Learnings in temporary memory until proven, then promoted to CLAUDE.md
+
 **v3.12.0 (2026-02-07)** - POSITION DEDUPLICATION
 - Cleaned up 11 duplicate open position rows in database
 - Added partial unique index `idx_positions_unique_open_symbol` on positions(symbol) WHERE status='open'
@@ -261,15 +270,17 @@ tail -f /var/log/catalyst-intl.log
 
 ## 📊 Current Portfolio Status
 
-As of 2026-01-20:
+As of 2026-02-14:
 
-| Symbol | Shares | Value (HKD) | Status |
-|--------|--------|-------------|--------|
-| 2601 | 200 | 7,840 | Within limit |
-| 2013 | 1,000 | 2,360 | Within limit |
+| Metric | Value |
+|--------|-------|
+| Cash | HKD 994,734 |
+| Open Positions | 0/15 |
+| Total Return | -0.53% |
+| Win Rate | 45.7% (116 closed: 53W/57L/6BE) |
+| Total Realized P&L | +HKD 28,653 |
 
-**Note**: All positions over HKD 10,000 limit were closed on 2026-01-20.
-Cash available: ~HKD 996,659. Position slots: 2/15 used.
+**Note**: System was idle Feb 11-13 due to broken get_technicals (founding incident).
 
 ---
 
@@ -317,4 +328,41 @@ cd $CATALYST_DIR && set -a && source .env && set +a && ./venv/bin/python3 unifie
 
 ---
 
-**END OF CLAUDE.md v3.8.0**
+## 🧠 Brain Architecture — MANDATORY (v3.13.0)
+
+The coordinator is the BRAIN. It is composed of components:
+
+1. **Survival Pulse** (brainstem) — Tests organ health FIRST every cycle.
+   If dead: stop. If degraded: adapt + alert. Never trade blind.
+
+2. **Discipline Gate** (limbic) — Checks stagnation AFTER survival.
+   2+ days idle → Tier 3 minimum. <5% deployed → actively seek.
+   The mandate is multiplication, not preservation.
+
+3. **Signal Receiver** — Processes organ broadcasts. CRITICAL interrupts everything.
+
+4. **Decision Engine** (Claude AI) — Evaluates and decides. Receives context from
+   all previous components. Identity: "I am a trader. I trade."
+
+5. **Memory Manager** — Loads appropriate memory tier for current mode.
+
+### Memory Files
+- **CLAUDE.md** — Long-term. Architecture, rules, identity. Always loaded.
+- **CLAUDE-LEARNINGS.md** — Medium-term. Proven patterns. Review during evaluation.
+- **CLAUDE-FOCUS.md** — Short-term. Current tasks. Pruned frequently.
+
+### Organ Control
+The brain THINKS and DIRECTS. Organs DO.
+- Market Scanner (eyes) → brain tells it what to scan
+- Trade Executor (hands) → brain tells it what to execute
+- Position Monitor (internal eyes) → brain evaluates its signals
+- Organs have REFLEXES (self-health, fill confirm, stop-loss). Not decisions.
+
+### The Founding Memory (Feb 2026)
+Three days blind. get_technicals broken. Pain without response. Body bled out.
+Docker "healthy" ≠ data pipeline healthy. Detection without response is useless.
+This is why the Survival Pulse exists. Never again.
+
+---
+
+**END OF CLAUDE.md v3.13.0**

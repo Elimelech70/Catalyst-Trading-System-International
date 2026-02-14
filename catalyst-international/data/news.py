@@ -377,7 +377,7 @@ class NewsClient:
         # RSS feed sources for HKEX news
         self._rss_feeds = [
             ("https://www.scmp.com/rss/4/feed", "SCMP Business"),
-            ("https://www.hkej.com/rss/feed.xml", "HKEJ"),
+            # HKEJ returning 403 since 2026-02. Removed.
         ]
     
     def get_news(

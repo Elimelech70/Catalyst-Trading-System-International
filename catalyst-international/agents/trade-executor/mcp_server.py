@@ -21,7 +21,7 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -195,6 +195,37 @@ async def list_tools() -> list[Tool]:
                 "required": ["decision", "reasoning"],
             },
         ),
+        Tool(
+            name="get_last_trade_date",
+            description="Get the date of the last BUY order for discipline checking.",
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        ),
+        Tool(
+            name="publish_signal",
+            description="Publish a signal to the nervous system (signals table).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "severity": {"type": "string", "enum": ["CRITICAL", "WARNING", "INFO", "OBSERVE"]},
+                    "domain": {"type": "string", "enum": ["HEALTH", "TRADING", "RISK", "LEARNING", "DIRECTION", "LIFECYCLE"]},
+                    "scope": {"type": "string", "description": "BROADCAST or DIRECTED:{organ}"},
+                    "content": {"type": "string", "description": "Signal message"},
+                    "data": {"type": "object", "description": "Optional JSON data"},
+                },
+                "required": ["severity", "domain", "scope", "content"],
+            },
+        ),
+        Tool(
+            name="get_signals",
+            description="Get unresolved signals from the nervous system.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "default": 20},
+                },
+                "required": [],
+            },
+        ),
     ]
 
 
@@ -208,6 +239,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "sync_positions": _handle_sync_positions,
         "check_risk": _handle_check_risk,
         "log_decision": _handle_log_decision,
+        "get_last_trade_date": _handle_get_last_trade_date,
+        "publish_signal": _handle_publish_signal,
+        "get_signals": _handle_get_signals,
     }
     handler = handlers.get(name)
     if not handler:
@@ -572,6 +606,74 @@ def _handle_log_decision(args: dict) -> dict:
         return {"logged": True, "decision_id": decision_id, "success": True, "timestamp": datetime.now(HK_TZ).isoformat()}
     except Exception as e:
         return {"logged": False, "error": str(e), "success": False}
+
+
+def _handle_publish_signal(args: dict) -> dict:
+    db = _get_db()
+    try:
+        data_json = json.dumps(args.get("data")) if args.get("data") else None
+        if args["severity"] == "CRITICAL":
+            expires = None
+        else:
+            expires = datetime.now(HK_TZ) + timedelta(hours=24)
+
+        with db.get_cursor() as cur:
+            cur.execute(
+                "INSERT INTO signals (severity, domain, scope, source, content, data, expires_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                (args["severity"], args["domain"], args["scope"],
+                 "coordinator", args["content"], data_json, expires)
+            )
+            row = cur.fetchone()
+            signal_id = row["id"] if row else None
+        return {"signal_id": signal_id, "success": True}
+    except Exception as e:
+        logger.error(f"Failed to publish signal: {e}")
+        return {"error": str(e), "success": False}
+
+
+def _handle_get_signals(args: dict) -> dict:
+    db = _get_db()
+    limit = args.get("limit", 20)
+    try:
+        with db.get_cursor() as cur:
+            cur.execute(
+                "SELECT id, severity, domain, scope, source, content, data, created_at "
+                "FROM signals "
+                "WHERE resolved = FALSE AND (expires_at IS NULL OR expires_at > NOW()) "
+                "ORDER BY CASE severity WHEN 'CRITICAL' THEN 0 WHEN 'WARNING' THEN 1 "
+                "WHEN 'INFO' THEN 2 ELSE 3 END, created_at DESC "
+                "LIMIT %s",
+                (limit,)
+            )
+            rows = cur.fetchall()
+            signals = [dict(row) for row in rows]
+            for sig in signals:
+                sig["created_at"] = str(sig["created_at"])
+        return {"signals": signals, "count": len(signals), "success": True}
+    except Exception as e:
+        logger.error(f"Failed to get signals: {e}")
+        return {"signals": [], "count": 0, "error": str(e), "success": False}
+
+
+def _handle_get_last_trade_date(args: dict) -> dict:
+    db = _get_db()
+    try:
+        with db.get_cursor() as cur:
+            cur.execute(
+                "SELECT MAX(created_at) as last_trade "
+                "FROM orders WHERE side = 'buy' AND status NOT IN ('cancelled', 'CANCELLED')"
+            )
+            row = cur.fetchone()
+            if row and row.get("last_trade"):
+                last_trade = row["last_trade"]
+                return {
+                    "last_trade_date": last_trade.isoformat() if hasattr(last_trade, 'isoformat') else str(last_trade),
+                    "success": True,
+                }
+            return {"last_trade_date": None, "success": True}
+    except Exception as e:
+        return {"last_trade_date": None, "error": str(e), "success": False}
 
 
 # ---------------------------------------------------------------------------

@@ -249,7 +249,9 @@ class MarketData:
         )
 
         df = pd.DataFrame(data)
-        df["timestamp"] = pd.to_datetime(df["date"])
+        # moomoo.py returns "timestamp" key, not "date"
+        date_col = "timestamp" if "timestamp" in df.columns else "date"
+        df["timestamp"] = pd.to_datetime(df[date_col])
         df = df.set_index("timestamp")
         df = df[["open", "high", "low", "close", "volume"]]
 
