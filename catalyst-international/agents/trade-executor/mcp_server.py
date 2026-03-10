@@ -477,7 +477,18 @@ def _handle_sync_positions(args: dict) -> dict:
     cycle_id = f"sync_{datetime.now(HK_TZ).strftime('%Y%m%d_%H%M%S')}"
 
     try:
-        broker_positions = broker.get_positions()
+        # CRITICAL: If broker API fails, do NOT close DB positions as phantoms.
+        # get_positions() now raises RuntimeError on API error (not silent []).
+        # We catch it here and abort sync to prevent phantom closures.
+        try:
+            broker_positions = broker.get_positions()
+        except RuntimeError as e:
+            logger.error(f"Broker API failed during sync, aborting: {e}")
+            results["errors"].append(f"Broker API failed: {e}")
+            results["success"] = False
+            results["timestamp"] = datetime.now(HK_TZ).isoformat()
+            return results
+
         broker_dict = {normalize_symbol(str(p.symbol)): p for p in broker_positions}
         broker_symbols = set(broker_dict.keys())
 

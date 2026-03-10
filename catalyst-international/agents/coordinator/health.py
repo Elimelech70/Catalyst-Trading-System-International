@@ -7,7 +7,11 @@ think about trading, it must know its organs are alive and functioning.
 
 The brain does not trade blind. The brain does not ignore pain.
 
-Version: 1.0.0
+Version: 1.1.0  (2026-02-28)
+  - Replaced check_risk test with get_portfolio (tests trade API directly,
+    no params needed, not fooled by sync handler timing)
+  - Added get_portfolio degraded context for decision engine
+  - Improved _test_tool: log failures, check for empty/null results
 """
 
 import logging
@@ -36,7 +40,7 @@ class SurvivalPulse:
             "params": {"symbol": "0700", "timeframe": "1h"},
             "critical": False,  # Brain can operate degraded without this
         },
-        "check_risk": {
+        "get_portfolio": {
             "server": "trade-executor",
             "params": {},
             "critical": True,
@@ -165,6 +169,12 @@ class SurvivalPulse:
                 "Quote data UNAVAILABLE. Cannot determine prices. Minimal operation only."
             )
 
+        if "get_portfolio" in health["degraded_tools"]:
+            parts.append(
+                "TRADE API DOWN. Cannot get portfolio, execute trades, or check risk. "
+                "Do NOT attempt any trades. Alert consciousness."
+            )
+
         return "\n".join(parts)
 
     def format_alert(self) -> str:
@@ -184,14 +194,31 @@ class SurvivalPulse:
         try:
             result = await hub.call(server, tool_name, params)
 
+            # Empty or null result = something went wrong
+            if not result:
+                log.warning(f"PULSE: {server}.{tool_name} returned empty result")
+                self.tool_state.setdefault(tool_name, {})["error"] = "empty result"
+                return False
+
             if isinstance(result, dict):
+                # Check for explicit error indicators
                 if result.get("error") or result.get("success") is False:
-                    self.tool_state.setdefault(tool_name, {})["error"] = str(
-                        result.get("error", "")
-                    )[:200]
+                    error_msg = str(result.get("error", "success=False"))[:200]
+                    log.warning(f"PULSE: {server}.{tool_name} FAILED: {error_msg}")
+                    self.tool_state.setdefault(tool_name, {})["error"] = error_msg
                     return False
 
+                # For get_portfolio: verify we got real data back (cash field present)
+                if tool_name == "get_portfolio" and "cash" not in result:
+                    error_msg = f"get_portfolio returned unexpected shape: {list(result.keys())[:5]}"
+                    log.warning(f"PULSE: {server}.{tool_name} FAILED: {error_msg}")
+                    self.tool_state.setdefault(tool_name, {})["error"] = error_msg
+                    return False
+
+            log.debug(f"PULSE: {server}.{tool_name} OK")
             return True
         except Exception as e:
-            self.tool_state.setdefault(tool_name, {})["error"] = str(e)[:200]
+            error_msg = str(e)[:200]
+            log.warning(f"PULSE: {server}.{tool_name} EXCEPTION: {error_msg}")
+            self.tool_state.setdefault(tool_name, {})["error"] = error_msg
             return False

@@ -1,14 +1,18 @@
 # =============================================================================
 # Name of Application: Catalyst Trading System
 # Name of file: docker-compose.yml
-# Version: 2.0.0
-# Last Updated: 2026-02-07
+# Version: 2.1.0
+# Last Updated: 2026-02-28
 # Purpose: Multi-Agent MCP Architecture - Docker Compose configuration
 #
 # Architecture:
 #   coordinator -> position-monitor (:8001/sse)
 #               -> market-scanner   (:8002/sse)
 #               -> trade-executor   (:8003/sse)
+#
+# Network: All agent containers use host networking so they can reach
+# OpenD on 127.0.0.1:11111 (Moomoo requires localhost for unencrypted trade).
+# Coordinator uses localhost URLs in mcp_config.json.
 #
 # Usage:
 #   docker compose up -d                    # Start all agents
@@ -70,26 +74,21 @@ services:
       dockerfile: agents/position-monitor/Dockerfile
     container_name: catalyst-position-monitor
     restart: unless-stopped
-    ports:
-      - "8001:8001"
+    network_mode: host
     environment:
       DATABASE_URL: ${DATABASE_URL}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      MOOMOO_HOST: host.docker.internal
-      MOOMOO_PORT: ${MOOMOO_DOCKER_PORT:-11112}
+      MOOMOO_HOST: 127.0.0.1
+      MOOMOO_PORT: ${MOOMOO_DOCKER_PORT:-11111}
       MONITOR_CHECK_INTERVAL: ${MONITOR_CHECK_INTERVAL:-300}
       PORT: 8001
       TZ: Asia/Hong_Kong
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s
       timeout: 10s
       start_period: 15s
       retries: 3
-    networks:
-      - catalyst-network
 
   # ===========================================================================
   # MCP Agent: Market Scanner (Eyes - reads market data)
@@ -100,27 +99,22 @@ services:
       dockerfile: agents/market-scanner/Dockerfile
     container_name: catalyst-market-scanner
     restart: unless-stopped
-    ports:
-      - "8002:8002"
+    network_mode: host
     environment:
-      MOOMOO_HOST: host.docker.internal
-      MOOMOO_PORT: ${MOOMOO_DOCKER_PORT:-11112}
+      MOOMOO_HOST: 127.0.0.1
+      MOOMOO_PORT: ${MOOMOO_DOCKER_PORT:-11111}
       NEWSAPI_KEY: ${NEWSAPI_KEY:-}
       ALPHA_VANTAGE_API_KEY: ${ALPHA_VANTAGE_API_KEY:-}
       FINNHUB_API_KEY: ${FINNHUB_API_KEY:-}
       TWELVE_DATA_API_KEY: ${TWELVE_DATA_API_KEY:-}
       PORT: 8002
       TZ: Asia/Hong_Kong
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 30s
       timeout: 10s
       start_period: 15s
       retries: 3
-    networks:
-      - catalyst-network
 
   # ===========================================================================
   # MCP Agent: Trade Executor (Hands - SINGLE WRITER for positions)
@@ -131,8 +125,7 @@ services:
       dockerfile: agents/trade-executor/Dockerfile
     container_name: catalyst-trade-executor
     restart: unless-stopped
-    ports:
-      - "8003:8003"
+    network_mode: host
     environment:
       DATABASE_URL: ${DATABASE_URL}
       DB_HOST: ${DB_HOST}
@@ -140,21 +133,17 @@ services:
       DB_NAME: ${DB_NAME:-catalyst_intl}
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
-      MOOMOO_HOST: host.docker.internal
-      MOOMOO_PORT: ${MOOMOO_DOCKER_PORT:-11112}
+      MOOMOO_HOST: 127.0.0.1
+      MOOMOO_PORT: ${MOOMOO_DOCKER_PORT:-11111}
       MOOMOO_TRADE_PWD: ${MOOMOO_TRADE_PWD:-}
       PORT: 8003
       TZ: Asia/Hong_Kong
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
       interval: 30s
       timeout: 10s
       start_period: 15s
       retries: 3
-    networks:
-      - catalyst-network
 
   # ===========================================================================
   # Coordinator (Brain - Claude AI decision maker)
@@ -165,6 +154,7 @@ services:
       dockerfile: agents/coordinator/Dockerfile
     container_name: catalyst-coordinator
     restart: unless-stopped
+    network_mode: host
     depends_on:
       position-monitor:
         condition: service_healthy
@@ -177,8 +167,6 @@ services:
       CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-sonnet-4-5-20250929}
       FORCE_MARKET_OPEN: ${FORCE_MARKET_OPEN:-}
       TZ: Asia/Hong_Kong
-    networks:
-      - catalyst-network
 
   # ===========================================================================
   # Legacy: Monolithic agent (kept for backward compat, will be retired)
@@ -191,6 +179,7 @@ services:
     restart: "no"
     profiles:
       - legacy
+    network_mode: host
     depends_on:
       postgres:
         condition: service_healthy
@@ -202,17 +191,13 @@ services:
       DB_NAME: ${DB_NAME:-catalyst_intl}
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
-      MOOMOO_HOST: ${MOOMOO_HOST:-host.docker.internal}
-      MOOMOO_PORT: ${MOOMOO_DOCKER_PORT:-11112}
+      MOOMOO_HOST: 127.0.0.1
+      MOOMOO_PORT: ${MOOMOO_DOCKER_PORT:-11111}
       ENVIRONMENT: ${ENVIRONMENT:-paper}
       TZ: Asia/Hong_Kong
     volumes:
       - ./logs:/app/logs
       - ./config:/app/config:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - catalyst-network
 
 volumes:
   postgres_data:

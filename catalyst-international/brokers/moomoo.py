@@ -693,7 +693,7 @@ class MoomooClient:
 
         if ret != RET_OK:
             logger.error(f"Failed to get positions: {data}")
-            return []
+            raise RuntimeError(f"Failed to get positions: {data}")
 
         positions = []
         for _, row in data.iterrows():

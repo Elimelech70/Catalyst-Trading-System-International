@@ -1,15 +1,15 @@
 {
   "mcpServers": {
     "position-monitor": {
-      "url": "http://position-monitor:8001/sse",
+      "url": "http://localhost:8001/sse",
       "description": "Position monitoring agent - watches open positions for exit signals"
     },
     "market-scanner": {
-      "url": "http://market-scanner:8002/sse",
+      "url": "http://localhost:8002/sse",
       "description": "Market scanning agent - provides quotes, technicals, patterns, news"
     },
     "trade-executor": {
-      "url": "http://trade-executor:8003/sse",
+      "url": "http://localhost:8003/sse",
       "description": "Trade execution agent - executes trades, manages positions (SINGLE WRITER)"
     }
   }
