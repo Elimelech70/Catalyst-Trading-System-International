@@ -267,6 +267,13 @@ async def handle_sse(request):
         await server.run(streams[0], streams[1], server.create_initialization_options())
 
 
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app):
+    logger.info("Market Scanner MCP Server starting on port 8002")
+    yield
+
 app = Starlette(
     debug=False,
     routes=[
@@ -274,12 +281,8 @@ app = Starlette(
         Route("/sse", endpoint=handle_sse),
         Mount("/messages/", app=sse.handle_post_message),
     ],
+    lifespan=lifespan,
 )
-
-
-@app.on_event("startup")
-async def on_startup():
-    logger.info("Market Scanner MCP Server starting on port 8002")
 
 
 if __name__ == "__main__":

@@ -47,6 +47,9 @@ class SurvivalPulse:
         },
     }
 
+    # Cerebellum is checked separately (not an MCP organ)
+    # The coordinator checks cerebellum.is_loaded() in Layer 1
+
     PAIN_THRESHOLD = 3
     ORGAN_FAILURE_THRESHOLD = 6
 

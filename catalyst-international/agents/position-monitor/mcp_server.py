@@ -305,6 +305,25 @@ async def handle_sse(request):
     async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
         await server.run(streams[0], streams[1], server.create_initialization_options())
 
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app):
+    # Startup
+    logger.info("Position Monitor MCP Server starting on port 8001")
+    await get_db_pool()
+    from monitor import MonitorLoop
+    monitor = MonitorLoop(await get_db_pool())
+    asyncio.create_task(monitor.run())
+    logger.info("Background monitoring loop started")
+    yield
+    # Shutdown
+    global _db_pool
+    if _db_pool:
+        await _db_pool.close()
+        _db_pool = None
+    logger.info("Position Monitor MCP Server stopped")
+
 app = Starlette(
     debug=False,
     routes=[
@@ -312,33 +331,8 @@ app = Starlette(
         Route("/sse", endpoint=handle_sse),
         Mount("/messages/", app=sse.handle_post_message),
     ],
+    lifespan=lifespan,
 )
-
-
-# ---------------------------------------------------------------------------
-# Startup: launch the background monitoring loop
-# ---------------------------------------------------------------------------
-
-@app.on_event("startup")
-async def on_startup():
-    """Start the background monitoring loop when server starts."""
-    logger.info("Position Monitor MCP Server starting on port 8001")
-    # Ensure DB pool is ready
-    await get_db_pool()
-    # Import and start the monitor loop in background
-    from monitor import MonitorLoop
-    monitor = MonitorLoop(await get_db_pool())
-    asyncio.create_task(monitor.run())
-    logger.info("Background monitoring loop started")
-
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    global _db_pool
-    if _db_pool:
-        await _db_pool.close()
-        _db_pool = None
-    logger.info("Position Monitor MCP Server stopped")
 
 
 if __name__ == "__main__":

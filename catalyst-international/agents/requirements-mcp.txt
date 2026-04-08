@@ -35,3 +35,6 @@ moomoo-api>=1.3.0
 
 # Timezone
 python-dateutil>=2.8.2
+
+# Neural inference (cerebellum - ONNX models)
+onnxruntime>=1.17.0

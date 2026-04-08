@@ -4,13 +4,15 @@ Coordinator Agent - The Brain
 Continuously running Claude agent that connects to all 3 MCP servers
 and orchestrates the trading workflow.
 
-Brain Components (run in order each cycle):
-  1. Survival Pulse - verify organ health
-  2. Discipline Gate - check for stagnation
-  3. Decision Engine - Claude AI tool-use loop
-  4. Memory Manager - log cycle outcomes
+6-Layer Cycle (run in order, every cycle, no layer skipped):
+  Layer 1: Heartbeat     - Am I alive? Are organs reachable? Is cerebellum loaded?
+  Layer 2: State          - Load identity (CLAUDE.md), learnings, attention mode
+  Layer 3: Self-Regulation - Budget, hours, discipline check
+  Layer 4: Working Memory - Load CLAUDE-FOCUS.md, signals, positions, neural signals
+  Layer 5: Inter-Agent    - Read DIRECTED signals from big_bro, body health
+  Layer 6: Voice          - Decision Engine (Claude AI) with full context
 
-Version: 2.0.0
+Version: 3.0.0 — Full 6-layer cycle per architecture v2.3
 """
 
 import asyncio
@@ -38,6 +40,31 @@ logging.basicConfig(
 logger = logging.getLogger("coordinator")
 
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
+
+# HKEX holiday calendar (non-weekend days when market is closed)
+# Source: Moomoo request_trading_days API, verified April 2026
+# Update this at the start of each year
+HKEX_HOLIDAYS_2026 = {
+    "2026-01-01",  # New Year's Day
+    "2026-02-17",  # Lunar New Year
+    "2026-02-18",  # Lunar New Year
+    "2026-02-19",  # Lunar New Year
+    "2026-04-03",  # Ching Ming Festival
+    "2026-04-06",  # Easter Monday
+    "2026-04-07",  # Day after Easter Monday
+    "2026-05-01",  # Labour Day
+    "2026-05-25",  # Buddha's Birthday
+    "2026-06-19",  # Tuen Ng Festival
+    "2026-07-01",  # HKSAR Establishment Day
+    "2026-10-01",  # National Day
+    "2026-10-19",  # Chung Yeung Festival
+    "2026-12-25",  # Christmas Day
+}
+# Half days (morning session only, close at 12:00)
+HKEX_HALF_DAYS_2026 = {
+    "2026-12-24",  # Christmas Eve
+    "2026-12-31",  # New Year's Eve
+}
 
 # Configuration
 POLL_INTERVAL = 60  # seconds between recommendation checks
@@ -211,6 +238,13 @@ class Coordinator:
       - Decision Engine (prefrontal cortex / Claude AI)
     """
 
+    # Paths for memory files (mounted as volumes or local)
+    MEMORY_PATHS = [
+        "/app/memory",       # Docker volume mount
+        "/app",              # Fallback in container
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),  # Dev: repo root
+    ]
+
     def __init__(self, mcp_config: dict):
         self.hub = MCPHub(mcp_config)
         self.anthropic = anthropic.Anthropic()
@@ -223,6 +257,87 @@ class Coordinator:
         # Brain components
         self.survival = SurvivalPulse()
         self.discipline = DisciplineGate()
+
+        # Attention state (Layer 2) — full state machine in Phase 2
+        self.attention_mode = "SECURITY_SELECTION"
+
+    # ------------------------------------------------------------------
+    # Memory loading (Layer 2 + Layer 4)
+    # ------------------------------------------------------------------
+
+    def _find_memory_file(self, filename: str) -> Optional[str]:
+        """Search known paths for a memory file."""
+        for base in self.MEMORY_PATHS:
+            path = os.path.join(base, filename)
+            if os.path.isfile(path):
+                return path
+        return None
+
+    def _load_memory_file(self, filename: str, max_lines: int = 0) -> str:
+        """Load a memory file. Returns empty string if not found."""
+        path = self._find_memory_file(filename)
+        if not path:
+            logger.debug(f"Memory file not found: {filename}")
+            return ""
+        try:
+            with open(path, "r") as f:
+                content = f.read()
+            if max_lines > 0:
+                lines = content.split("\n")
+                content = "\n".join(lines[:max_lines])
+            logger.info(f"Loaded memory: {filename} ({len(content)} chars)")
+            return content.strip()
+        except Exception as e:
+            logger.warning(f"Failed to load {filename}: {e}")
+            return ""
+
+    def _load_learnings(self) -> str:
+        """Layer 2: Load CLAUDE-LEARNINGS.md (medium-term memory)."""
+        return self._load_memory_file("CLAUDE-LEARNINGS.md")
+
+    def _load_focus(self) -> str:
+        """Layer 4: Load CLAUDE-FOCUS.md (short-term/working memory)."""
+        return self._load_memory_file("CLAUDE-FOCUS.md")
+
+    async def _load_signals(self, limit: int = 15) -> str:
+        """Layer 4: Load recent signals from the signal bus."""
+        try:
+            result = await self.hub.call("trade-executor", "get_signals", {"limit": limit})
+            signals = result.get("signals", [])
+            if not signals:
+                return ""
+            lines = []
+            for sig in signals:
+                lines.append(
+                    f"- [{sig.get('severity')}] {sig.get('domain')}/{sig.get('scope')}: "
+                    f"{sig.get('content', '')[:120]}"
+                )
+            return "\n".join(lines)
+        except Exception as e:
+            logger.warning(f"Failed to load signals: {e}")
+            return ""
+
+    async def _load_directed_signals(self) -> str:
+        """Layer 5: Load DIRECTED:coordinator signals from big_bro."""
+        try:
+            result = await self.hub.call("trade-executor", "get_signals", {"limit": 10})
+            signals = result.get("signals", [])
+            directed = [
+                s for s in signals
+                if "DIRECTED" in s.get("scope", "") and "coordinator" in s.get("scope", "").lower()
+            ]
+            if not directed:
+                return ""
+            lines = []
+            for sig in directed:
+                lines.append(
+                    f"- [{sig.get('severity')}] {sig.get('source', 'big_bro')}: "
+                    f"{sig.get('content', '')}"
+                )
+            return "\n".join(lines)
+        except Exception as e:
+            logger.warning(f"Failed to load directed signals: {e}")
+            return ""
 
     async def start(self):
         """Start the coordinator."""
@@ -253,7 +368,13 @@ class Coordinator:
         now = datetime.now(HK_TZ)
         if now.weekday() >= 5:
             return False
+        today_str = now.strftime("%Y-%m-%d")
+        if today_str in HKEX_HOLIDAYS_2026:
+            return False
         ct = now.time()
+        if today_str in HKEX_HALF_DAYS_2026:
+            # Half day: morning session only
+            return time(9, 30) <= ct < time(12, 0)
         if time(9, 30) <= ct < time(12, 0):
             return True
         if time(13, 0) <= ct < time(16, 0):
@@ -298,6 +419,7 @@ class Coordinator:
                     result = await self.hub.call("trade-executor", "close_position", {
                         "symbol": symbol,
                         "reason": f"Monitor EXIT: {reason}",
+                        "exit_type": "AI_PATTERN",
                     })
                     if result.get("success"):
                         action_taken = "closed"
@@ -358,6 +480,7 @@ Should I CLOSE this position or HOLD? Reply with just CLOSE or HOLD on the first
                 result = await self.hub.call("trade-executor", "close_position", {
                     "symbol": symbol,
                     "reason": f"AI consultation: {text[:100]}",
+                    "exit_type": "AI_PATTERN",
                 })
                 logger.info(f"  AI decided CLOSE for {symbol}: {text[:80]}")
                 return "closed"
@@ -405,8 +528,8 @@ Should I CLOSE this position or HOLD? Reply with just CLOSE or HOLD on the first
 
     async def _run_scan_cycle(self):
         """
-        One brain cycle. Components execute in order:
-        Survival -> Discipline -> Decision Engine
+        One brain cycle. 6 layers execute in order. No layer is skipped.
+        The output of each layer feeds the next.
         """
         self.last_scan_time = datetime.now(HK_TZ)
         logger.info("=" * 60)
@@ -414,23 +537,37 @@ Should I CLOSE this position or HOLD? Reply with just CLOSE or HOLD on the first
         logger.info("=" * 60)
 
         # ==============================================================
-        # COMPONENT 1: SURVIVAL PULSE (Brainstem)
-        # Am I alive? Can my organs see?
+        # LAYER 1: HEARTBEAT (Brainstem)
+        # Am I alive? Are organs reachable? Is cerebellum loaded?
         # ==============================================================
-        logger.info("BRAIN: Running Survival Pulse...")
+        logger.info("LAYER 1: Heartbeat...")
         health = await self.survival.pulse(self.hub)
 
         logger.info(
-            f"BRAIN: Survival -- Score {health['score']}/{health['max_score']}, "
+            f"LAYER 1: Score {health['score']}/{health['max_score']}, "
             f"{'healthy' if health['healthy'] else 'DEGRADED' if health['degraded'] else 'DEAD'}"
         )
 
         if health["dead"]:
-            logger.error("BRAIN: All organs down. Cannot operate. Sleeping.")
+            logger.error("LAYER 1: All organs down. Cannot operate. Sleeping.")
             logger.error(self.survival.format_alert())
             return {"tools_called": 0, "trades_executed": 0, "status": "dead"}
 
         health_context = self.survival.get_context_for_decision_engine(health)
+
+        # Check cerebellum health (Phase 6 integration point)
+        cerebellum_context = ""
+        try:
+            from cerebellum import Cerebellum
+            cerebellum = Cerebellum()
+            if cerebellum.is_loaded():
+                logger.info("LAYER 1: Cerebellum loaded and ready")
+            else:
+                logger.info("LAYER 1: Cerebellum not loaded — LLM-only mode")
+                cerebellum = None
+        except ImportError:
+            logger.debug("LAYER 1: Cerebellum module not available — LLM-only mode")
+            cerebellum = None
 
         if health["pain_signals"]:
             logger.warning(self.survival.format_alert())
@@ -441,10 +578,18 @@ Should I CLOSE this position or HOLD? Reply with just CLOSE or HOLD on the first
             )
 
         # ==============================================================
-        # COMPONENT 2: DISCIPLINE GATE (Limbic system)
-        # Am I being faithful with what I've been given?
+        # LAYER 2: STATE (Identity + Formation)
+        # Load identity. Load learnings. What mode? What attention state?
         # ==============================================================
-        logger.info("BRAIN: Running Discipline Gate...")
+        logger.info("LAYER 2: State — loading identity and memory...")
+        learnings_content = self._load_learnings()
+        logger.info(f"LAYER 2: Attention mode = {self.attention_mode}")
+
+        # ==============================================================
+        # LAYER 3: SELF-REGULATION (Limbic system)
+        # Budget, hours, discipline. Should I be active?
+        # ==============================================================
+        logger.info("LAYER 3: Self-Regulation...")
         portfolio = await self._get_portfolio()
         last_trade = await self._get_last_trade_date()
 
@@ -459,7 +604,7 @@ Should I CLOSE this position or HOLD? Reply with just CLOSE or HOLD on the first
         discipline_context = discipline["context_for_decision_engine"]
 
         logger.info(
-            f"BRAIN: Discipline -- {discipline['level']}, "
+            f"LAYER 3: Discipline -- {discipline['level']}, "
             f"{discipline['days_idle']}d idle, "
             f"{discipline['capital_utilisation']:.1%} deployed, "
             f"{discipline['consecutive_passes']} consecutive passes"
@@ -474,17 +619,55 @@ Should I CLOSE this position or HOLD? Reply with just CLOSE or HOLD on the first
             )
 
         # ==============================================================
-        # COMPONENT 3: DECISION ENGINE (Prefrontal cortex)
-        # The Claude AI call — evaluate and decide
+        # LAYER 4: WORKING MEMORY (Hippocampus)
+        # Load CLAUDE-FOCUS.md, recent signals, open positions, neural signals
         # ==============================================================
-        logger.info("BRAIN: Running Decision Engine...")
+        logger.info("LAYER 4: Working Memory...")
+        focus_content = self._load_focus()
+        signals_context = await self._load_signals()
 
-        # Build system prompt with full component context
+        # Neural signals from cerebellum (Phase 6 integration)
+        neural_context = ""
+        if cerebellum and cerebellum.is_loaded():
+            try:
+                neural_context = "Cerebellum active. Neural signals available in tool results."
+                logger.info("LAYER 4: Neural signals loaded from cerebellum")
+            except Exception as e:
+                logger.warning(f"LAYER 4: Failed to load neural signals: {e}")
+
+        if signals_context:
+            logger.info(f"LAYER 4: {signals_context.count(chr(10)) + 1} signals loaded")
+        if focus_content:
+            logger.info(f"LAYER 4: CLAUDE-FOCUS.md loaded ({len(focus_content)} chars)")
+
+        # ==============================================================
+        # LAYER 5: INTER-AGENT (Thalamus)
+        # Read DIRECTED signals from big_bro. Body health check.
+        # ==============================================================
+        logger.info("LAYER 5: Inter-Agent...")
+        directed_signals = await self._load_directed_signals()
+        if directed_signals:
+            logger.info(f"LAYER 5: big_bro directives received:\n{directed_signals}")
+        else:
+            logger.info("LAYER 5: No big_bro directives")
+
+        # ==============================================================
+        # LAYER 6: VOICE (Prefrontal cortex)
+        # Build full context. Call Decision Engine. Process response.
+        # ==============================================================
+        logger.info("LAYER 6: Voice — Decision Engine...")
+
+        # Build system prompt with all 6 layers of context
         system_prompt = build_system_prompt(
             health_context=health_context,
             discipline_context=discipline_context,
             degraded_mode=health["degraded"],
             available_tools=health["available_tools"],
+            learnings_content=learnings_content,
+            focus_content=focus_content,
+            signals_context=signals_context,
+            directed_signals=directed_signals,
+            neural_context=neural_context,
         )
 
         context = f"""## Trading Cycle Context

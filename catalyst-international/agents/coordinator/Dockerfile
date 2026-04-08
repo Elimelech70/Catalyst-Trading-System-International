@@ -17,6 +17,9 @@ RUN pip install --no-cache-dir -r /tmp/requirements-mcp.txt
 COPY tools.py /app/tools.py
 COPY config/ /app/config/
 
+# Copy cerebellum (neural inference)
+COPY cerebellum.py /app/cerebellum.py
+
 # Copy agent-specific code
 COPY agents/coordinator/*.py /app/
 COPY agents/coordinator/mcp_config.json /app/

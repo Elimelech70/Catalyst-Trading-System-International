@@ -140,6 +140,12 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "symbol": {"type": "string"},
                     "reason": {"type": "string", "default": "Manual close"},
+                    "exit_type": {
+                        "type": "string",
+                        "enum": ["AI_PATTERN", "STOP_LOSS", "TAKE_PROFIT", "MANUAL", "MARKET_CLOSE", "TIME_LIMIT"],
+                        "default": "MANUAL",
+                        "description": "How the exit was triggered (for feedback loop)",
+                    },
                 },
                 "required": ["symbol"],
             },
@@ -412,6 +418,7 @@ def _handle_close_position(args: dict) -> dict:
 
     symbol = args["symbol"]
     reason = args.get("reason", "Manual close")
+    exit_type = args.get("exit_type", "MANUAL")
 
     positions = broker.get_positions()
     position = None
@@ -439,9 +446,21 @@ def _handle_close_position(args: dict) -> dict:
                 db.close_position(symbol=symbol, exit_price=fill_price, reason=reason)
             except Exception as e:
                 logger.error(f"Failed to close position in DB: {e}")
+            # Record exit_type in positions table (feedback loop)
+            try:
+                with db.get_cursor() as cur:
+                    cur.execute(
+                        "UPDATE positions SET exit_type = %s "
+                        "WHERE symbol = %s AND status = 'closed' AND exit_type IS NULL "
+                        "ORDER BY exit_time DESC LIMIT 1",
+                        (exit_type, normalize_symbol(symbol))
+                    )
+                logger.info(f"Recorded exit_type={exit_type} for {symbol}")
+            except Exception as e:
+                logger.warning(f"Failed to record exit_type for {symbol}: {e}")
         return {
             "status": "success", "symbol": symbol, "quantity": quantity,
-            "fill_price": fill_price, "reason": reason,
+            "fill_price": fill_price, "reason": reason, "exit_type": exit_type,
             "success": True, "timestamp": datetime.now(HK_TZ).isoformat(),
         }
     elif status in ["SUBMITTED", "submitted"]:
@@ -708,6 +727,13 @@ async def handle_sse(request):
         await server.run(streams[0], streams[1], server.create_initialization_options())
 
 
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app):
+    logger.info("Trade Executor MCP Server starting on port 8003")
+    yield
+
 app = Starlette(
     debug=False,
     routes=[
@@ -715,12 +741,8 @@ app = Starlette(
         Route("/sse", endpoint=handle_sse),
         Mount("/messages/", app=sse.handle_post_message),
     ],
+    lifespan=lifespan,
 )
-
-
-@app.on_event("startup")
-async def on_startup():
-    logger.info("Trade Executor MCP Server starting on port 8003")
 
 
 if __name__ == "__main__":

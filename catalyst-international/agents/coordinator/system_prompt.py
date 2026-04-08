@@ -2,20 +2,25 @@
 The Brain's Identity -- The Archetype
 
 Structure is ARCHITECTURAL. Do not reorder:
-1. Identity (who I am)
+1. Identity (who I am) — loaded from CLAUDE.md
 2. Discipline (non-negotiable character)
 3. Operating Context (dynamic, injected by brain components)
-4. Criteria (guidelines for the decision engine)
-5. Risk Management (hard limits)
-6. Tools (what I can use)
-7. Cycle Structure (how I operate)
+4. Learnings (medium-term memory — from CLAUDE-LEARNINGS.md)
+5. Working Memory (short-term — from CLAUDE-FOCUS.md + signals)
+6. Criteria (guidelines for the decision engine)
+7. Risk Management (hard limits)
+8. Tools (what I can use)
+9. Cycle Structure (how I operate)
 
-Version: 2.0.0
+Version: 3.0.0 — Full 6-layer support
 """
 
 
 def build_system_prompt(health_context="", discipline_context="",
-                        degraded_mode=False, available_tools=None):
+                        degraded_mode=False, available_tools=None,
+                        learnings_content="", focus_content="",
+                        signals_context="", directed_signals="",
+                        neural_context=""):
 
     prompt_sections = []
 
@@ -59,6 +64,26 @@ Max position: HKD 10,000. Max positions: 15.
         if discipline_context:
             ctx += discipline_context + "\n\n"
         prompt_sections.append(ctx)
+
+    # -- SECTION 3b: LEARNINGS (Medium-term memory — Layer 2) --
+    if learnings_content:
+        prompt_sections.append(f"""## LEARNINGS (Medium-Term Memory)
+
+{learnings_content}
+""")
+
+    # -- SECTION 3c: WORKING MEMORY (Short-term — Layer 4) --
+    working_mem_parts = []
+    if focus_content:
+        working_mem_parts.append(f"### Current Focus\n{focus_content}")
+    if signals_context:
+        working_mem_parts.append(f"### Recent Signals\n{signals_context}")
+    if directed_signals:
+        working_mem_parts.append(f"### Directives from big_bro\n{directed_signals}")
+    if neural_context:
+        working_mem_parts.append(f"### Neural Signals (Cerebellum)\n{neural_context}")
+    if working_mem_parts:
+        prompt_sections.append("## WORKING MEMORY\n\n" + "\n\n".join(working_mem_parts))
 
     # -- SECTION 4: DEGRADED MODE (Conditional) --
     if degraded_mode:

@@ -38,6 +38,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
       - ./sql/position_monitor_service_schema.sql:/docker-entrypoint-initdb.d/02-monitor-schema.sql:ro
+      - ./sql/002-feedback-loop.sql:/docker-entrypoint-initdb.d/03-feedback-loop.sql:ro
     ports:
       - "5432:5432"
     healthcheck:
@@ -162,6 +163,11 @@ services:
         condition: service_healthy
       trade-executor:
         condition: service_healthy
+    volumes:
+      - ./CLAUDE.md:/app/memory/CLAUDE.md:ro
+      - ./CLAUDE-LEARNINGS.md:/app/memory/CLAUDE-LEARNINGS.md:ro
+      - ./CLAUDE-FOCUS.md:/app/memory/CLAUDE-FOCUS.md:ro
+      - ./models:/app/models:ro
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-sonnet-4-5-20250929}

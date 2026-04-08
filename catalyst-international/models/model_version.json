@@ -1,0 +1,7 @@
+{
+    "version": "0.0.0",
+    "deployed_at": "awaiting first deployment",
+    "candle_model": "not deployed",
+    "news_model": "not deployed",
+    "note": "SCP trained ONNX models from laptop to this directory. Coordinator hot-reloads on next cycle."
+}
