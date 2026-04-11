@@ -134,9 +134,9 @@ def analyze_signals(
     now = datetime.now(HK_TZ)
     ct = now.time()
     if time(15, 50) <= ct < time(16, 0):
-        signals.append("near_close:strong")
-        immediate_exit = True
-        strongest = strongest or "Market closing soon"
+        signals.append("near_close:moderate")
+        consult_ai = True
+        strongest = strongest or "Market closing soon — coordinator decides"
     if time(11, 50) <= ct < time(12, 0):
         signals.append("lunch_break:moderate")
         consult_ai = True

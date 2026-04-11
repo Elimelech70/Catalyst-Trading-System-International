@@ -451,8 +451,11 @@ def _handle_close_position(args: dict) -> dict:
                 with db.get_cursor() as cur:
                     cur.execute(
                         "UPDATE positions SET exit_type = %s "
-                        "WHERE symbol = %s AND status = 'closed' AND exit_type IS NULL "
-                        "ORDER BY exit_time DESC LIMIT 1",
+                        "WHERE position_id = ("
+                        "  SELECT position_id FROM positions "
+                        "  WHERE symbol = %s AND status = 'closed' AND exit_type IS NULL "
+                        "  ORDER BY exit_time DESC LIMIT 1"
+                        ")",
                         (exit_type, normalize_symbol(symbol))
                     )
                 logger.info(f"Recorded exit_type={exit_type} for {symbol}")
@@ -627,6 +630,11 @@ def _handle_log_decision(args: dict) -> dict:
     db = _get_db()
     cycle_id = f"mcp_{datetime.now(HK_TZ).strftime('%Y%m%d_%H%M%S')}"
     try:
+        # Ensure cycle exists in agent_cycles (FK requirement)
+        try:
+            db.start_agent_cycle(cycle_id=cycle_id)
+        except Exception:
+            pass  # cycle may already exist from same second
         decision_id = db.log_decision(
             cycle_id=cycle_id,
             decision_type=args["decision"],

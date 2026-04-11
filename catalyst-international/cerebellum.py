@@ -5,13 +5,13 @@ The cerebellum handles the routine. Claude AI handles only what requires
 genuine reasoning (the 6% principle).
 
 Two models:
-  - CandleModel: OHLCV sequence -> direction + confidence + predicted return
+  - CandleModel v0.3: Multi-timeframe OHLCV (5m + 15m) -> direction + confidence + returns
   - NewsToSecurityModel: headline + source -> security + direction + confidence
 
 Models are ONNX files deployed from the laptop (neural_claude) via SCP.
 If models are not present, the coordinator falls back to LLM-only mode.
 
-Version: 1.0.0
+Version: 1.1.0 — v0.3 CandleModel dual-input support
 """
 
 import json
@@ -23,13 +23,50 @@ import numpy as np
 
 logger = logging.getLogger("cerebellum")
 
+# Must match training config
+LOOKBACK = 60
+DIRECTION_NAMES = ["bullish", "bearish", "neutral"]
+
+
+def _normalize_candle_window(candles_arr: np.ndarray) -> np.ndarray:
+    """
+    Normalize OHLCV window exactly like training.
+    OHLC: percent change from first candle's close.
+    Volume: log-normalized then z-scored within window.
+
+    Args:
+        candles_arr: (N, 5) array of [open, high, low, close, volume]
+
+    Returns:
+        (N, 5) normalized array
+    """
+    arr = candles_arr.copy().astype(np.float32)
+    ref_close = arr[0, 3]  # first candle's close
+    if ref_close == 0:
+        ref_close = 1.0
+
+    # OHLC: percent change from reference
+    arr[:, 0] = (arr[:, 0] - ref_close) / ref_close * 100
+    arr[:, 1] = (arr[:, 1] - ref_close) / ref_close * 100
+    arr[:, 2] = (arr[:, 2] - ref_close) / ref_close * 100
+    arr[:, 3] = (arr[:, 3] - ref_close) / ref_close * 100
+
+    # Volume: log-normalize then z-score
+    arr[:, 4] = np.log1p(arr[:, 4])
+    vol = arr[:, 4]
+    vol_std = vol.std()
+    if vol_std > 0:
+        arr[:, 4] = (vol - vol.mean()) / vol_std
+
+    return arr
+
 
 class CandleModel:
     """
-    Candle pattern classifier using ONNX inference.
+    CandleModel v0.3 — Multi-timeframe direction classifier.
 
-    Input:  OHLCV candle sequence (N candles x 5 features)
-    Output: direction (bullish/bearish/neutral), confidence (0-1), predicted returns
+    Input:  Two OHLCV sequences (5m and 15m candles, each 60 bars x 5 features)
+    Output: direction (bullish/bearish/neutral), confidence (0-1), predicted returns (5m, 15m, 1h)
     """
 
     def __init__(self, model_path: str):
@@ -48,76 +85,100 @@ class CandleModel:
                 self.model_path,
                 providers=["CPUExecutionProvider"],
             )
+            inputs = {i.name: i.shape for i in self.session.get_inputs()}
             self.loaded = True
-            logger.info(f"CandleModel: Loaded from {self.model_path}")
+            logger.info(f"CandleModel: Loaded from {self.model_path} — inputs: {inputs}")
         except ImportError:
             logger.warning("CandleModel: onnxruntime not installed")
         except Exception as e:
             logger.error(f"CandleModel: Failed to load: {e}")
 
-    def predict(self, candle_sequence: list) -> dict:
+    def predict(self, candles_5m, candles_15m=None) -> dict:
         """
-        Run inference on a candle sequence.
+        Run inference on candle sequences.
 
         Args:
-            candle_sequence: List of dicts with keys: open, high, low, close, volume
-                             Or a numpy array of shape (N, 5)
+            candles_5m: List of dicts with OHLCV keys, or numpy array (N, 5)
+            candles_15m: Same format for 15m timeframe. If None, uses candles_5m for both.
 
         Returns:
-            dict with: direction, confidence, predicted_return_5m, predicted_return_15m
+            dict with: direction, confidence, probabilities, predicted returns
         """
         if not self.loaded or not self.session:
             return {"available": False, "reason": "model not loaded"}
 
         try:
-            # Convert to numpy array if needed
-            if isinstance(candle_sequence, list):
-                arr = np.array([
-                    [c.get("open", 0), c.get("high", 0), c.get("low", 0),
-                     c.get("close", 0), c.get("volume", 0)]
-                    for c in candle_sequence
-                ], dtype=np.float32)
-            else:
-                arr = np.array(candle_sequence, dtype=np.float32)
+            # Convert to numpy arrays
+            arr_5m = self._to_array(candles_5m)
+            arr_15m = self._to_array(candles_15m) if candles_15m is not None else arr_5m.copy()
 
-            # Normalize: percent change from first candle
-            if arr.shape[0] > 0 and arr[0, 3] > 0:
-                base_price = arr[0, 3]  # first close
-                arr[:, :4] = (arr[:, :4] - base_price) / base_price
-                if arr[0, 4] > 0:
-                    arr[:, 4] = arr[:, 4] / arr[0, 4]  # volume ratio
+            # Pad/trim to LOOKBACK
+            arr_5m = self._pad_to_lookback(arr_5m)
+            arr_15m = self._pad_to_lookback(arr_15m)
 
-            # Add batch dimension: (1, N, 5)
-            input_data = arr.reshape(1, -1, 5)
+            # Normalize like training
+            norm_5m = _normalize_candle_window(arr_5m)
+            norm_15m = _normalize_candle_window(arr_15m)
 
-            input_name = self.session.get_inputs()[0].name
-            outputs = self.session.run(None, {input_name: input_data})
+            # Add batch dimension: (1, LOOKBACK, 5)
+            batch_5m = norm_5m.reshape(1, LOOKBACK, 5)
+            batch_15m = norm_15m.reshape(1, LOOKBACK, 5)
 
-            # Interpret output based on model structure
-            # Default expectation: outputs[0] = [bullish_prob, bearish_prob, neutral_prob]
-            probs = outputs[0][0]
-            directions = ["bullish", "bearish", "neutral"]
+            # Run inference
+            outputs = self.session.run(None, {
+                "candles_5m": batch_5m,
+                "candles_15m": batch_15m,
+            })
+
+            dir_logits = outputs[0][0]   # (3,)
+            pred_returns = outputs[1][0]  # (3,)
+            confidence = outputs[2][0][0] # scalar
+
+            # Softmax direction logits
+            exp_logits = np.exp(dir_logits - dir_logits.max())
+            probs = exp_logits / exp_logits.sum()
             idx = int(np.argmax(probs))
-            confidence = float(probs[idx])
 
             result = {
                 "available": True,
-                "direction": directions[idx] if idx < len(directions) else "neutral",
-                "confidence": round(confidence, 4),
-                "probabilities": {d: round(float(p), 4) for d, p in zip(directions, probs)},
+                "direction": DIRECTION_NAMES[idx],
+                "confidence": round(float(confidence), 4),
+                "direction_probability": round(float(probs[idx]), 4),
+                "probabilities": {
+                    d: round(float(p), 4)
+                    for d, p in zip(DIRECTION_NAMES, probs)
+                },
+                "predicted_return_5m": round(float(pred_returns[0]), 6),
+                "predicted_return_15m": round(float(pred_returns[1]), 6),
+                "predicted_return_1h": round(float(pred_returns[2]), 6),
             }
-
-            # Optional: predicted returns if model has second output
-            if len(outputs) > 1:
-                returns = outputs[1][0]
-                result["predicted_return_5m"] = round(float(returns[0]), 6) if len(returns) > 0 else None
-                result["predicted_return_15m"] = round(float(returns[1]), 6) if len(returns) > 1 else None
 
             return result
 
         except Exception as e:
             logger.error(f"CandleModel inference error: {e}")
             return {"available": False, "reason": str(e)}
+
+    @staticmethod
+    def _to_array(candles) -> np.ndarray:
+        """Convert list of dicts or array to numpy (N, 5)."""
+        if isinstance(candles, np.ndarray):
+            return candles.astype(np.float32)
+        return np.array([
+            [c.get("open", 0), c.get("high", 0), c.get("low", 0),
+             c.get("close", 0), c.get("volume", 0)]
+            for c in candles
+        ], dtype=np.float32)
+
+    @staticmethod
+    def _pad_to_lookback(arr: np.ndarray) -> np.ndarray:
+        """Pad or trim array to exactly LOOKBACK rows."""
+        if arr.shape[0] >= LOOKBACK:
+            return arr[-LOOKBACK:]
+        # Pad front with first row repeated
+        pad_count = LOOKBACK - arr.shape[0]
+        padding = np.tile(arr[0:1], (pad_count, 1))
+        return np.vstack([padding, arr])
 
 
 class NewsToSecurityModel:
@@ -162,20 +223,14 @@ class NewsToSecurityModel:
             return {"available": False, "reason": "model not loaded"}
 
         try:
-            # Simple tokenization: character-level or word-level encoding
-            # The actual encoding must match what the model was trained on
             tokens = np.array([ord(c) for c in headline[:256]], dtype=np.float32)
-            # Pad to fixed length
             padded = np.zeros(256, dtype=np.float32)
             padded[:len(tokens)] = tokens[:256]
-
-            # Add source tier as feature
             input_data = np.concatenate([padded, [float(source_tier)]]).reshape(1, -1)
 
             input_name = self.session.get_inputs()[0].name
             outputs = self.session.run(None, {input_name: input_data})
 
-            # Interpret: outputs[0] = security probabilities, outputs[1] = direction
             result = {
                 "available": True,
                 "raw_output": [float(x) for x in outputs[0][0][:5]],

@@ -246,23 +246,46 @@ async def get_todays_decisions(report_date: date) -> Dict[str, List[Dict]]:
             """, report_date)
         
         result = {'new_orders': [], 'skipped': [], 'exits': []}
-        
+
         for row in rows:
             decision = {
                 'symbol': row['symbol'],
                 'reasoning': row['reasoning'] or 'No reason recorded',
                 'time': row['created_at'].strftime('%H:%M') if row['created_at'] else '',
             }
-            
+
             decision_type = (row['decision_type'] or '').lower()
-            
+
             if decision_type in ('trade', 'buy', 'entry', 'open'):
                 result['new_orders'].append(decision)
             elif decision_type in ('skip', 'pass', 'no_trade', 'observation'):
                 result['skipped'].append(decision)
             elif decision_type in ('close', 'exit', 'sell'):
                 result['exits'].append(decision)
-        
+
+        # Fallback: if no decisions found, count from orders table directly
+        if not result['new_orders'] and not result['exits']:
+            try:
+                order_rows = await conn.fetch("""
+                    SELECT symbol, side, quantity, status, reason, created_at
+                    FROM orders
+                    WHERE created_at::date = $1
+                    ORDER BY created_at
+                """, report_date)
+                for row in order_rows:
+                    decision = {
+                        'symbol': row['symbol'],
+                        'reasoning': row.get('reason') or f"{row['side']} {row['quantity']} shares ({row['status']})",
+                        'time': row['created_at'].strftime('%H:%M') if row['created_at'] else '',
+                    }
+                    side = (row.get('side') or '').lower()
+                    if side == 'buy':
+                        result['new_orders'].append(decision)
+                    elif side == 'sell':
+                        result['exits'].append(decision)
+            except Exception as e:
+                print(f"Warning: Could not fetch from orders table: {e}")
+
         return result
         
     except Exception as e:

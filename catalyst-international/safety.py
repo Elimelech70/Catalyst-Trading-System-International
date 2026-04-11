@@ -40,8 +40,8 @@ class RiskLimits:
     max_daily_loss_pct: float = 0.02
     warning_loss_pct: float = 0.015
     max_trade_loss_pct: float = 0.01
-    max_daily_trades: int = 10
-    min_risk_reward: float = 2.0
+    max_daily_trades: int = 25
+    min_risk_reward: float = 1.2
     max_stop_loss_pct: float = 0.05
     lot_size: int = 100
 
