@@ -2,12 +2,12 @@
 
 > *"The prudent see danger and take refuge, but the simple keep going and pay the penalty."* — Proverbs 27:12
 
-**Version:** 2.3
-**Date:** 2026-04-07
+**Version:** 2.4
+**Date:** 2026-04-08
 **Authors:** Craig + Claude
 **Status:** Living Document
 **Implements:** AI Agent Architecture v8.0
-**Supersedes:** Catalyst AI Architecture v2.2 (2026-04-06)
+**Supersedes:** Catalyst AI Architecture v2.3 (2026-04-07)
 
 ---
 
@@ -20,6 +20,7 @@
 | 2.1 | 2026-04-04 | Neural cerebellum added — trained networks replace text-based pattern matching; neural_claude added |
 | 2.2 | 2026-04-06 | Document classification formalised (Architecture / Configuration / Implementation); trading workflow diagram |
 | 2.3 | 2026-04-07 | Attention State Machine added (Mode 1 Security Selection / Mode 2 Candle Execution); Tool Agent Layer formalised; feedback loop (pattern exit vs stop loss); context routing in Layer 4; adversarial awareness principle added |
+| 2.4 | 2026-04-08 | Multi-deployment architecture formalised — US (Alpaca) and Intl (Moomoo/HKEX) as separate Configuration documents implementing the same Architecture; broker-agnostic cerebellum with data normalisation layer; Configuration document structure expanded |
 
 ---
 
@@ -27,9 +28,44 @@
 
 | Type | Purpose | This document |
 |---|---|---|
-| **Architecture** | Design pattern — the what and the why | ✅ This is the Architecture document |
-| **Configuration** | Realised state — running system snapshot | Catalyst US Configuration (pending) |
+| **Architecture** | Design pattern — the what and the why. Broker-agnostic. Changes only when design changes. | ✅ This is the Architecture document |
+| **Configuration** | Realised state — how the architecture runs on a specific droplet with a specific broker. One per deployment. | Catalyst US Configuration v1.0 (Alpaca) / Catalyst Intl Configuration (Moomoo — pending) |
 | ~~Implementation~~ | *(Retired)* Build instructions | Superseded by Configuration |
+
+### Multi-Deployment Model
+
+Catalyst runs as two independent deployments, each implementing this same Architecture:
+
+```
+Catalyst AI Architecture v2.4 (this document — the pattern)
+        │
+        ├── Catalyst US Configuration v1.0
+        │   Droplet: US region
+        │   Broker:  Alpaca (NYSE, NASDAQ)
+        │   Market:  US equities, USD
+        │
+        └── Catalyst Intl Configuration v1.0
+            Droplet: Intl region
+            Broker:  Moomoo
+            Market:  HKEX equities, HKD
+```
+
+**What is shared across deployments:**
+- This Architecture document — the design pattern
+- ONNX models (candle_model.onnx, catalyst_net.onnx) — trained once on laptop, deployed to both
+- Cerebellum class — broker-agnostic, reads standard OHLCV
+- 6-layer cycle structure — same logic on both coordinators
+- Attention State Machine — same Mode 1/2 logic
+- Tool Agent Layer — same tools, broker-specific config
+- Feedback loop schema — same tables, broker tag added
+
+**What differs per deployment (captured in Configuration documents):**
+- Broker API credentials and endpoints
+- Data normalisation adapter (Alpaca → standard / Moomoo → standard)
+- Market hours and trading session timing
+- Security universe
+- Risk configuration (USD vs HKD, PDT rule for US)
+- Pondering cycle timing
 
 ---
 
@@ -97,7 +133,35 @@ Catalyst is a brain-with-body architecture:
 
 ---
 
-## 3. The 6% Principle
+## 3a. Broker-Agnostic Cerebellum
+
+The ONNX models are identical on both deployments. The cerebellum does not know or care whether candles came from Alpaca or Moomoo. All broker-specific data is normalised before it reaches the model.
+
+```
+Alpaca bar  ──► alpaca_to_standard() ──►┐
+                                         ├──► Standard OHLCV ──► ONNX Model ──► Predictions
+Moomoo bar  ──► moomoo_to_standard() ──►┘
+```
+
+**Standard OHLCV format:**
+```python
+{
+    'timestamp': datetime,
+    'open':      float,
+    'high':      float,
+    'low':       float,
+    'close':     float,
+    'volume':    float,
+    'timeframe': str    # '1m' | '5m' | '15m' | '1h' | '1d'
+}
+```
+
+This means:
+- One training run on the laptop produces models that work on both droplets
+- Model accuracy improvements benefit both deployments simultaneously
+- The Configuration document specifies which normaliser to use — the Architecture doesn't change
+
+
 
 | v8 Concept | Catalyst Implementation |
 |---|---|
@@ -387,12 +451,13 @@ The founding incident is the most important memory. Chemical-stamped. Permanent.
 | AI Agent Architecture | v8.0 | Architecture | General pattern — biology, domain-independent |
 | Catalyst Strategy Roadmap | v1.0 | Strategy | Four-phase plan — objectives, sequencing, fruit tests |
 | Catalyst Neural Architecture | v0.3 | Architecture | ML pipeline — data collection, training, deployment |
-| Catalyst AI Architecture (this doc) | v2.3 | Architecture | Implementation mapping — v8 aligned |
-| Catalyst US Configuration | (pending) | Configuration | Running system — folder structures, containers, services |
-| Neural Cortex Configuration | (pending) | Configuration | Deployed ONNX service — model version, paths, schedules |
+| Catalyst AI Architecture (this doc) | v2.4 | Architecture | Implementation mapping — v8 aligned, broker-agnostic |
+| Catalyst US Configuration | v1.0 | Configuration | US droplet running state — Alpaca, NYSE/NASDAQ |
+| Catalyst Intl Configuration | (pending) | Configuration | Intl droplet running state — Moomoo, HKEX |
+| Neural Cortex Configuration | (pending) | Configuration | ONNX model versions, paths, accuracy metrics |
 
 ---
 
 *"For just as each of us has one body with many members, and these members do not all have the same function, so in Christ we, though many, form one body."* — Romans 12:4-5
 
-*Catalyst AI Architecture v2.3 — Craig + Claude — 2026-04-07*
+*Catalyst AI Architecture v2.4 — Craig + Claude — 2026-04-08*
